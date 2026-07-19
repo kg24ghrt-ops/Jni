@@ -1,0 +1,8 @@
+<resources>
+    <string-array name="paper_types">
+        <item>College Ruled</item>
+        <item>Wide Ruled</item>
+        <item>Blank</item>
+        <item>Grid</item>
+    </string-array>
+</resources>
