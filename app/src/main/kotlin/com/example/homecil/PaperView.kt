@@ -28,7 +28,10 @@ class PaperView : View {
         init()
     }
 
-    private var paperBitmap: Bitmap? = null
+    /** The underlying paper bitmap – accessible to external renderers. */
+    var paperBitmap: Bitmap? = null
+        internal set   // writable only within the module, readable publicly
+
     private val drawMatrix = Matrix()
 
     private lateinit var scaleDetector: ScaleGestureDetector
@@ -86,13 +89,9 @@ class PaperView : View {
      * as a base, then draws blue lines and a red margin.
      */
     private fun createLinedPaperBitmap(width: Int, height: Int): Bitmap {
-        // 1. Get the realistic paper texture from the native library
         val base = PaperRenderer.createPaperBitmap(width, height)
-
-        // 2. Create a Canvas to draw the notebook lines on top
         val canvas = Canvas(base)
 
-        // 3. Horizontal blue lines every 80 pixels
         val linePaint = Paint().apply {
             color = Color.argb(180, 0x70, 0xA0, 0xD0)  // semi‑transparent soft blue
             strokeWidth = 2f
@@ -104,7 +103,6 @@ class PaperView : View {
             y += 80
         }
 
-        // 4. Red margin line at 120 px from left
         val marginPaint = Paint().apply {
             color = Color.argb(200, 0xE0, 0x60, 0x60)  // soft red, slightly transparent
             strokeWidth = 4f
@@ -113,7 +111,6 @@ class PaperView : View {
         val marginX = 120f
         canvas.drawLine(marginX, 0f, marginX, height.toFloat(), marginPaint)
 
-        // 5. Optional thin red line 20px right of the margin
         val subMarginPaint = Paint().apply {
             color = Color.argb(140, 0xE0, 0x60, 0x60)
             strokeWidth = 1f
@@ -121,7 +118,18 @@ class PaperView : View {
         }
         canvas.drawLine(marginX + 20, 0f, marginX + 20, height.toFloat(), subMarginPaint)
 
-        return base   // now contains texture + lines
+        return base
+    }
+
+    /**
+     * Applies an ink stamp onto the paper at the given coordinates.
+     * The ink is blended realistically with the paper texture.
+     */
+    fun applyInkStamp(inkBitmap: Bitmap, x: Int, y: Int) {
+        paperBitmap?.let { paper ->
+            PaperRenderer.simulateInk(paper, inkBitmap, x, y)
+            invalidate()
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
