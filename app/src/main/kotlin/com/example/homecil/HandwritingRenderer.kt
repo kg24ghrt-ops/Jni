@@ -8,7 +8,8 @@ object HandwritingRenderer {
     val INK_COLOR = Color.rgb(0x1A, 0x4D, 0x8C)
 
     /**
-     * Renders the given character onto the paper bitmap as realistic ink.
+     * Renders the given character onto the paper bitmap as realistic ink,
+     * with human‑like imperfections.
      * Returns the advance width so the cursor can be moved.
      */
     fun stampCharacter(
@@ -37,11 +38,13 @@ object HandwritingRenderer {
             this.color = INK_COLOR
             isAntiAlias = true
         }
-        // Baseline offset: we need to place the character at (0, -fm.ascent)
         canvas.drawText(char, 0f, -fm.ascent, textPaint)
 
+        // 🔥 New: Apply human‑like distortion to kill perfect shapes
+        PaperRenderer.distortBitmap(inkBitmap, 2.0f)   // strength ~2 pixels
+
         // Stamp it onto the paper
-        PaperRenderer.simulateInk(paperBitmap, inkBitmap, x.toInt(), (y + fm.ascent).toInt())
+        PaperRenderer.simulateInk(paperBitmap, inkBitmap, (x).toInt(), (y + fm.ascent).toInt())
 
         inkBitmap.recycle()
         return width

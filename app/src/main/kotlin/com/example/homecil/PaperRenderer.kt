@@ -3,11 +3,9 @@ package com.example.homecil
 import android.graphics.Bitmap
 
 object PaperRenderer {
-    // Paper texture generation
     external fun renderPaper(bitmap: Bitmap, width: Int, height: Int)
-
-    // Ink simulation – blends an ink bitmap onto the paper
     external fun simulateInk(paperBitmap: Bitmap, inkBitmap: Bitmap, offsetX: Int, offsetY: Int)
+    external fun distortBitmap(bitmap: Bitmap, strength: Float)   // <-- new
 
     init {
         System.loadLibrary("native-lib")

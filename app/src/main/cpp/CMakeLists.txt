@@ -3,7 +3,8 @@ project("homecil_native")
 
 add_library(native-lib SHARED
         native-lib.cpp
-        ink_engine.cpp)
+        ink_engine.cpp
+        distort_engine.cpp)   # <-- new
 
 find_library(android-lib android)
 find_library(log-lib log)
