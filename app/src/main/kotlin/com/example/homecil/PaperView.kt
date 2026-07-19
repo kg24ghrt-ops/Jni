@@ -10,20 +10,33 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 
-class PaperView @JvmOverloads constructor(
-    context: Context,
-    attrs: AttributeSet? = null,
-    defStyleAttr: Int = 0
-) : View(context, attrs, defStyleAttr) {
+class PaperView : View {
+
+    constructor(context: Context) : super(context) {
+        init()
+    }
+
+    constructor(context: Context, attrs: AttributeSet?) : super(context, attrs) {
+        init()
+    }
+
+    constructor(context: Context, attrs: AttributeSet?, defStyleAttr: Int) : super(context, attrs, defStyleAttr) {
+        init()
+    }
 
     private var paperBitmap: Bitmap? = null
     private val drawMatrix = Matrix()
 
-    private val scaleDetector = ScaleGestureDetector(context, ScaleListener())
-    private val gestureDetector = GestureDetector(context, GestureListener())
+    private lateinit var scaleDetector: ScaleGestureDetector
+    private lateinit var gestureDetector: GestureDetector
 
     private val minScale = 0.5f
     private val maxScale = 5.0f
+
+    private fun init() {
+        scaleDetector = ScaleGestureDetector(context, ScaleListener())
+        gestureDetector = GestureDetector(context, GestureListener())
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
