@@ -11,6 +11,14 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        // PaperView will generate the paper bitmap once it knows its size
+
+        binding.fabTogglePaper.setOnClickListener {
+            // Cycle through REALISTIC -> PLAIN -> LINED -> REALISTIC
+            binding.paperView.paperStyle = when (binding.paperView.paperStyle) {
+                PaperStyle.REALISTIC -> PaperStyle.PLAIN
+                PaperStyle.PLAIN -> PaperStyle.LINED
+                PaperStyle.LINED -> PaperStyle.REALISTIC
+            }
+        }
     }
 }
