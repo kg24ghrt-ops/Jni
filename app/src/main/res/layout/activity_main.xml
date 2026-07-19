@@ -7,16 +7,17 @@
     android:layout_height="match_parent"
     android:background="@android:color/white">
 
-    <ImageView
-        android:id="@+id/paperImage"
+    <!-- Custom paper view (zoomable, pannable) -->
+    <com.example.homecil.PaperView
+        android:id="@+id/paperView"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:scaleType="fitXY"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- Welcome message overlay (passes touches through) -->
     <TextView
         android:id="@+id/welcomeText"
         android:layout_width="wrap_content"
@@ -25,6 +26,9 @@
         android:textSize="18sp"
         android:padding="16dp"
         android:background="#AAFFFFFF"
+        android:clickable="false"
+        android:focusable="false"
+        android:longClickable="false"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 
