@@ -3,4 +3,8 @@
     <string name="app_name">Home Cil</string>
     <string name="app_name_short">HomeCil</string>
     <string name="content_description_app_icon">Application icon</string>
+    
+    
+    <string name="welcome">Realistic paper is ready</string>
+
 </resources>
