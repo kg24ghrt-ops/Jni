@@ -28,9 +28,9 @@ class PaperView : View {
         init()
     }
 
-    /** The underlying paper bitmap – accessible to external renderers. */
+    /** The underlying paper bitmap (may contain ink strokes). */
     var paperBitmap: Bitmap? = null
-        internal set   // writable only within the module, readable publicly
+        internal set
 
     private val drawMatrix = Matrix()
 
@@ -40,12 +40,17 @@ class PaperView : View {
     private val minScale = 0.5f
     private val maxScale = 5.0f
 
-    /** Current paper style; changing it triggers a redraw. */
+    // --- Ink stroke management ---
+    private val inkStrokes = mutableListOf<InkStroke>()
+    private var basePaperBitmap: Bitmap? = null   // clean paper without any ink
+
+    /** Current paper style; changing it triggers a redraw and clears ink. */
     var paperStyle: PaperStyle = PaperStyle.REALISTIC
         set(value) {
             if (field != value) {
                 field = value
                 paperBitmap = null
+                inkStrokes.clear()   // ink doesn’t belong to the new style
                 if (width > 0 && height > 0) {
                     generatePaperBitmap()
                 }
@@ -61,39 +66,38 @@ class PaperView : View {
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w > 0 && h > 0 && (w != oldw || h != oldh || paperBitmap == null)) {
-            generatePaperBitmap()
+            generatePaperBitmap()   // will preserve strokes now
             drawMatrix.reset()
             invalidate()
         }
     }
 
-    /** Creates the appropriate bitmap for the current paperStyle. */
+    /** Creates the appropriate base bitmap for the current paperStyle,
+     *  then re‑applies all existing ink strokes. */
     private fun generatePaperBitmap() {
         val w = width
         val h = height
         if (w <= 0 || h <= 0) return
 
-        paperBitmap = when (paperStyle) {
+        basePaperBitmap = when (paperStyle) {
             PaperStyle.REALISTIC -> PaperRenderer.createPaperBitmap(w, h)
             PaperStyle.PLAIN -> {
                 val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                bmp.eraseColor(Color.rgb(0xF5, 0xF0, 0xE6))   // warm white
+                bmp.eraseColor(Color.rgb(0xF5, 0xF0, 0xE6))
                 bmp
             }
             PaperStyle.LINED -> createLinedPaperBitmap(w, h)
         }
+
+        rebuildPaperWithInk()   // put the saved ink back on top
     }
 
-    /**
-     * Generates a school notebook‑style bitmap using the realistic JNI texture
-     * as a base, then draws blue lines and a red margin.
-     */
     private fun createLinedPaperBitmap(width: Int, height: Int): Bitmap {
         val base = PaperRenderer.createPaperBitmap(width, height)
         val canvas = Canvas(base)
 
         val linePaint = Paint().apply {
-            color = Color.argb(180, 0x70, 0xA0, 0xD0)  // semi‑transparent soft blue
+            color = Color.argb(180, 0x70, 0xA0, 0xD0)
             strokeWidth = 2f
             isAntiAlias = true
         }
@@ -104,7 +108,7 @@ class PaperView : View {
         }
 
         val marginPaint = Paint().apply {
-            color = Color.argb(200, 0xE0, 0x60, 0x60)  // soft red, slightly transparent
+            color = Color.argb(200, 0xE0, 0x60, 0x60)
             strokeWidth = 4f
             isAntiAlias = true
         }
@@ -121,14 +125,44 @@ class PaperView : View {
         return base
     }
 
-    /**
-     * Applies an ink stamp onto the paper at the given coordinates.
-     * The ink is blended realistically with the paper texture.
-     */
-    fun applyInkStamp(inkBitmap: Bitmap, x: Int, y: Int) {
-        paperBitmap?.let { paper ->
-            PaperRenderer.simulateInk(paper, inkBitmap, x, y)
+    /** Returns the Y coordinate of the nearest horizontal line (for LINED paper). */
+    fun snapToLine(y: Float): Float {
+        if (paperStyle != PaperStyle.LINED) return y
+        val lineSpacing = 80f
+        return Math.round(y / lineSpacing) * lineSpacing
+    }
+
+    /** Adds an ink stroke and stamps it onto the current paper. */
+    fun addInkStroke(stroke: InkStroke) {
+        inkStrokes.add(stroke)
+        paperBitmap?.let {
+            PaperRenderer.simulateInk(it, stroke.inkBitmap, stroke.x, stroke.y)
             invalidate()
+        }
+    }
+
+    /** Removes the last ink stroke and redraws the paper. */
+    fun removeLastStroke() {
+        if (inkStrokes.isNotEmpty()) {
+            inkStrokes.removeLast()
+            rebuildPaperWithInk()
+            invalidate()
+        }
+    }
+
+    /** Clears all ink strokes. */
+    fun clearAllInk() {
+        inkStrokes.clear()
+        rebuildPaperWithInk()
+        invalidate()
+    }
+
+    private fun rebuildPaperWithInk() {
+        basePaperBitmap?.let { base ->
+            paperBitmap = base.copy(Bitmap.Config.ARGB_8888, true)
+            for (stroke in inkStrokes) {
+                PaperRenderer.simulateInk(paperBitmap!!, stroke.inkBitmap, stroke.x, stroke.y)
+            }
         }
     }
 

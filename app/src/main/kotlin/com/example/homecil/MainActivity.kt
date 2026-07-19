@@ -5,8 +5,7 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.View
-import android.view.inputmethod.EditorInfo
-import android.widget.EditText
+import android.view.inputmethod.InputMethodManager
 import androidx.appcompat.app.AppCompatActivity
 import com.example.homecil.databinding.ActivityMainBinding
 
@@ -20,14 +19,15 @@ class MainActivity : AppCompatActivity() {
         typeface = android.graphics.Typeface.DEFAULT
         isAntiAlias = true
     }
-    private val charWidths = mutableListOf<Float>()
+    private val charWidths = mutableListOf<Float>()  // to keep track of character advances
+    private var previousTextLength = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Paper style toggle (existing)
+        // Paper style toggle
         binding.fabTogglePaper.setOnClickListener {
             binding.paperView.paperStyle = when (binding.paperView.paperStyle) {
                 PaperStyle.REALISTIC -> PaperStyle.PLAIN
@@ -48,39 +48,48 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startWriteMode() {
+        // Align writing baseline to notebook line if LINED paper
+        currentY = binding.paperView.snapToLine(currentY)
+
         binding.invisibleInput.visibility = View.VISIBLE
-        // Position the EditText at the writing start
         binding.invisibleInput.x = currentX
         binding.invisibleInput.y = currentY
         binding.invisibleInput.setText("")
         binding.invisibleInput.requestFocus()
         showKeyboard()
 
-        // Track text changes
+        charWidths.clear()
+        previousTextLength = 0
+
         binding.invisibleInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
                 val text = s?.toString() ?: return
-                if (text.length > charWidths.size) {
-                    // New character added
+                val len = text.length
+
+                if (len > previousTextLength) {
+                    // New character(s) added
                     val newChar = text.last().toString()
-                    val advance = HandwritingRenderer.stampCharacter(
-                        binding.paperView.paperBitmap!!,
-                        newChar,
-                        currentX,
-                        currentY,
-                        textPaint
-                    )
-                    currentX += advance
-                    charWidths.add(advance)
-                    // Move the EditText so the cursor follows the end
-                    binding.invisibleInput.x = currentX
-                    // Keep text in EditText so cursor is at end, but make it invisible
-                } else if (text.length < charWidths.size) {
-                    // Backspace – simplistic: reset everything (you can improve later)
-                    resetWriting()
+                    val stroke = HandwritingRenderer.createInkStroke(newChar, currentX, currentY, textPaint)
+                    if (stroke != null) {
+                        binding.paperView.addInkStroke(stroke)
+                        val advance = textPaint.measureText(newChar)
+                        currentX += advance
+                        charWidths.add(advance)
+                        // Move invisible EditText to keep cursor aligned
+                        binding.invisibleInput.x = currentX
+                    }
+                } else if (len < previousTextLength) {
+                    // Backspace pressed – remove last character
+                    if (charWidths.isNotEmpty()) {
+                        val removedWidth = charWidths.removeLast()
+                        currentX -= removedWidth
+                        binding.invisibleInput.x = currentX
+                        binding.paperView.removeLastStroke()
+                    }
                 }
+                previousTextLength = len
             }
         })
     }
@@ -89,24 +98,15 @@ class MainActivity : AppCompatActivity() {
         hideKeyboard()
         binding.invisibleInput.visibility = View.GONE
         binding.invisibleInput.clearFocus()
-        // Remove text watcher? We'll just ignore if not in write mode.
-    }
-
-    private fun resetWriting() {
-        // Reset writing position and clear ink? Not implemented here.
-        // For now just keep the ink on paper.
-        charWidths.clear()
-        currentX = 200f
-        binding.invisibleInput.setText("")
     }
 
     private fun showKeyboard() {
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
         imm.showSoftInput(binding.invisibleInput, 0)
     }
 
     private fun hideKeyboard() {
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
         imm.hideSoftInputFromWindow(binding.invisibleInput.windowToken, 0)
     }
 }

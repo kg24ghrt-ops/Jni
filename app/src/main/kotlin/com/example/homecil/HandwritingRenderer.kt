@@ -8,45 +8,37 @@ object HandwritingRenderer {
     val INK_COLOR = Color.rgb(0x1A, 0x4D, 0x8C)
 
     /**
-     * Renders the given character onto the paper bitmap as realistic ink,
-     * with human‑like imperfections.
-     * Returns the advance width so the cursor can be moved.
+     * Creates an ink bitmap for the given character with realistic distortion.
+     * Returns the [InkStroke] ready to be stamped (does not stamp here).
      */
-    fun stampCharacter(
-        paperBitmap: Bitmap,
+    fun createInkStroke(
         char: String,
         x: Float,
-        y: Float,
+        y: Float,        // baseline y
         paint: Paint
-    ): Float {
-        if (char.isEmpty()) return 0f
+    ): InkStroke? {
+        if (char.isEmpty()) return null
 
-        // Measure the character
         val width = paint.measureText(char)
         val fm = paint.fontMetrics
         val height = (fm.descent - fm.ascent).toInt() + 2
         val charWidth = width.toInt() + 2
+        if (charWidth <= 0 || height <= 0) return null
 
-        if (charWidth <= 0 || height <= 0) return width
-
-        // Create a small bitmap for the character
         val inkBitmap = Bitmap.createBitmap(charWidth, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(inkBitmap)
 
-        // Draw the character in the gel pen colour
         val textPaint = TextPaint(paint).apply {
-            this.color = INK_COLOR
+            color = INK_COLOR
             isAntiAlias = true
         }
         canvas.drawText(char, 0f, -fm.ascent, textPaint)
 
-        // 🔥 New: Apply human‑like distortion to kill perfect shapes
-        PaperRenderer.distortBitmap(inkBitmap, 2.0f)   // strength ~2 pixels
+        // Apply human‑like distortion
+        PaperRenderer.distortBitmap(inkBitmap, 2.0f)
 
-        // Stamp it onto the paper
-        PaperRenderer.simulateInk(paperBitmap, inkBitmap, (x).toInt(), (y + fm.ascent).toInt())
-
-        inkBitmap.recycle()
-        return width
+        // The y passed is the baseline, so we place the bitmap so that its baseline aligns
+        val bitmapTop = y + fm.ascent   // fm.ascent is negative
+        return InkStroke(char, inkBitmap, x.toInt(), bitmapTop.toInt())
     }
 }
