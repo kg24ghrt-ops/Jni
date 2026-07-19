@@ -4,12 +4,17 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Matrix
+import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
 
-class PaperView(context: Context) : View(context) {
+class PaperView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+    defStyleAttr: Int = 0
+) : View(context, attrs, defStyleAttr) {
 
     private var paperBitmap: Bitmap? = null
     private val drawMatrix = Matrix()
@@ -24,7 +29,6 @@ class PaperView(context: Context) : View(context) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w > 0 && h > 0 && (w != oldw || h != oldh)) {
             paperBitmap = PaperRenderer.createPaperBitmap(w, h)
-            // Reset transform when size changes
             drawMatrix.reset()
             invalidate()
         }
@@ -39,7 +43,6 @@ class PaperView(context: Context) : View(context) {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         scaleDetector.onTouchEvent(event)
-        // Allow panning only when not scaling
         if (!scaleDetector.isInProgress) {
             gestureDetector.onTouchEvent(event)
         }
