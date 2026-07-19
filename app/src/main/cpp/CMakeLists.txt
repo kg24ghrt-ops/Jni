@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.18.1)
 project("homecil_native")
 
 add_library(native-lib SHARED
-        active-lib.cpp)
+        native-lib.cpp
+        ink_engine.cpp)
 
 find_library(android-lib android)
 find_library(log-lib log)
