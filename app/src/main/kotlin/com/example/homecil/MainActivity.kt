@@ -12,15 +12,15 @@ import com.example.homecil.databinding.ActivityMainBinding
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var writeMode = false
-    private var currentX = 200f
-    private var currentY = 400f
+    private var lineStartX = 200f
+    private var lineBaselineY = 400f
     private val textPaint = Paint().apply {
         textSize = 64f
         typeface = android.graphics.Typeface.DEFAULT
         isAntiAlias = true
     }
-    private val charWidths = mutableListOf<Float>()  // to keep track of character advances
-    private var previousTextLength = 0
+
+    private val lineStrokes = mutableListOf<InkStroke>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,56 +48,53 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startWriteMode() {
-        // Align writing baseline to notebook line if LINED paper
-        currentY = binding.paperView.snapToLine(currentY)
+        lineBaselineY = binding.paperView.snapToLine(lineBaselineY)
 
         binding.invisibleInput.visibility = View.VISIBLE
-        binding.invisibleInput.x = currentX
-        binding.invisibleInput.y = currentY
+        binding.invisibleInput.x = lineStartX
+        binding.invisibleInput.y = lineBaselineY
         binding.invisibleInput.setText("")
         binding.invisibleInput.requestFocus()
         showKeyboard()
 
-        charWidths.clear()
-        previousTextLength = 0
+        // Clear previous line
+        binding.paperView.clearAllInk()
+        lineStrokes.clear()
 
         binding.invisibleInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
-                val text = s?.toString() ?: return
-                val len = text.length
-
-                if (len > previousTextLength) {
-                    // New character(s) added
-                    val newChar = text.last().toString()
-                    val stroke = HandwritingRenderer.createInkStroke(newChar, currentX, currentY, textPaint)
-                    if (stroke != null) {
-                        binding.paperView.addInkStroke(stroke)
-                        val advance = textPaint.measureText(newChar)
-                        currentX += advance
-                        charWidths.add(advance)
-                        // Move invisible EditText to keep cursor aligned
-                        binding.invisibleInput.x = currentX
-                    }
-                } else if (len < previousTextLength) {
-                    // Backspace pressed – remove last character
-                    if (charWidths.isNotEmpty()) {
-                        val removedWidth = charWidths.removeLast()
-                        currentX -= removedWidth
-                        binding.invisibleInput.x = currentX
-                        binding.paperView.removeLastStroke()
-                    }
-                }
-                previousTextLength = len
+                val text = s?.toString() ?: ""
+                updateLine(text)
             }
         })
+    }
+
+    private fun updateLine(text: String) {
+        // Remove all current line strokes from the paper view
+        binding.paperView.clearAllInk()
+        lineStrokes.clear()
+
+        if (text.isEmpty()) return
+
+        // Create new strokes for the whole text using the new cluster‑based method
+        val strokes = HandwritingRenderer.createClusterStrokes(
+            text, lineStartX, lineBaselineY, textPaint
+        )
+        lineStrokes.addAll(strokes)
+
+        // Stamp each stroke onto the paper
+        for (stroke in lineStrokes) {
+            binding.paperView.addInkStroke(stroke)
+        }
     }
 
     private fun stopWriteMode() {
         hideKeyboard()
         binding.invisibleInput.visibility = View.GONE
         binding.invisibleInput.clearFocus()
+        // Ink remains on paper
     }
 
     private fun showKeyboard() {

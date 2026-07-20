@@ -5,7 +5,7 @@ import android.graphics.Bitmap
 object PaperRenderer {
     external fun renderPaper(bitmap: Bitmap, width: Int, height: Int)
     external fun simulateInk(paperBitmap: Bitmap, inkBitmap: Bitmap, offsetX: Int, offsetY: Int)
-    external fun distortBitmap(bitmap: Bitmap, strength: Float)   // <-- new
+    external fun distortBitmap(bitmap: Bitmap, strength: Float, seed: Int)   // seed added
 
     init {
         System.loadLibrary("native-lib")
