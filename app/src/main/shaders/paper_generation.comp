@@ -3,22 +3,31 @@
 // Workgroup size – each group processes 16x16 pixels
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// Output image – RGBA8 (will be converted to RGB565 later in Kotlin)
+// Output image – RGBA8
 layout(rgba8, binding = 0) uniform highp writeonly image2D outputImage;
 
-// Uniforms – passed from CPU
+// Uniforms – tunable parameters
 layout(std140, binding = 1) uniform Params {
     highp vec2  imageSize;
     highp float lineSpacing;
     highp float marginLeft;
     highp float lineThickness;
-    highp uint  seed;               // <-- unique seed for each call
+    highp uint  seed;
     highp vec3  lineColor;
     highp vec3  marginColor;
-    highp vec3  baseColor;           // base paper color (off‑white)
+    highp vec3  baseColor;
+
+    // Tunable parameters
+    highp float fiberScale;      // 0.2
+    highp float grainStrength;   // 0.3
+    highp float bleedAmount;     // 0.25
+    highp float waveAmplitude;   // 0.8
+    highp float inclineSlope;    // 0.002
+    highp float spotThreshold;   // 0.97
 };
 
-// ---------- Seeded hash (produces random-looking float in [0,1]) ----------
+// ---------- CORE NOISE (unified) ----------
+
 uint hash(uint x, uint y, uint seed) {
     uint n = x ^ (y * 0x9e3779b9u) ^ seed;
     n = n ^ (n << 13);
@@ -27,82 +36,205 @@ uint hash(uint x, uint y, uint seed) {
     return n;
 }
 
-float randHash(uint x, uint y, uint seed) {
+mediump float randHash(uint x, uint y, uint seed) {
     return float(hash(x, y, seed)) / 4294967296.0;
 }
 
-// ---------- Value noise (using hash) ----------
-float noise(uint x, uint y, uint seed) {
-    return randHash(x, y, seed);
-}
-
-float smoothNoise(float x, float y, uint seed) {
+// Single unified value noise – shared across all effects
+mediump float valueNoise(highp float x, highp float y, uint seed) {
     uint ix = uint(floor(x));
     uint iy = uint(floor(y));
-    float fx = x - float(ix);
-    float fy = y - float(iy);
-    float sx = fx * fx * (3.0 - 2.0 * fx);
-    float sy = fy * fy * (3.0 - 2.0 * fy);
+    mediump float fx = x - float(ix);
+    mediump float fy = y - float(iy);
+    mediump float sx = fx * fx * (3.0 - 2.0 * fx);
+    mediump float sy = fy * fy * (3.0 - 2.0 * fy);
 
-    float n00 = noise(ix,     iy,     seed);
-    float n10 = noise(ix + 1u, iy,     seed);
-    float n01 = noise(ix,     iy + 1u, seed);
-    float n11 = noise(ix + 1u, iy + 1u, seed);
+    mediump float n00 = randHash(ix,     iy,     seed);
+    mediump float n10 = randHash(ix + 1u, iy,     seed);
+    mediump float n01 = randHash(ix,     iy + 1u, seed);
+    mediump float n11 = randHash(ix + 1u, iy + 1u, seed);
 
-    float nx0 = mix(n00, n10, sx);
-    float nx1 = mix(n01, n11, sx);
+    mediump float nx0 = mix(n00, n10, sx);
+    mediump float nx1 = mix(n01, n11, sx);
     return mix(nx0, nx1, sy);
 }
 
-float fbm(float x, float y, uint seed) {
-    float value = 0.0;
-    float amplitude = 0.5;
-    float frequency = 0.01;
-    float persistence = 0.6;
-    uint octaves = 4u;
-    for (uint i = 0u; i < octaves; i++) {
-        value += amplitude * smoothNoise(x * frequency, y * frequency, seed + i);
-        amplitude *= persistence;
-        frequency *= 2.0;
+// ---------- NOISE CACHE STRUCTURE ----------
+// We compute a set of base noises once per pixel, then reuse them.
+
+struct NoiseCache {
+    mediump float base;      // primary grain noise
+    mediump float detail;    // secondary detail
+    mediump float warm;      // color variation
+    mediump float wave;      // line wave
+    mediump float imperfection; // spots
+};
+
+// Generate all noise values with minimal hash calls
+NoiseCache generateNoiseCache(highp float x, highp float y, uint seed) {
+    NoiseCache n;
+
+    // Scale coordinates to different frequencies
+    highp float fx1 = x * 0.03;
+    highp float fy1 = y * 0.03;
+    highp float fx2 = x * 0.01;
+    highp float fy2 = float(seed) * 0.1;
+    highp float fx3 = x * 0.6;
+    highp float fy3 = y * 0.6;
+
+    // Single unified FBM for grain (4 octaves)
+    mediump float grain = 0.0;
+    mediump float amp = 0.5;
+    mediump float freq = 0.008;
+    for (uint i = 0u; i < 4u; i++) {
+        grain += amp * valueNoise(x * freq, y * freq, seed + i * 131u);
+        amp *= 0.6;
+        freq *= 2.0;
     }
-    return value;
+    n.base = grain;
+
+    // Detail – micro noise (cheap)
+    n.detail = randHash(uint(floor(x * 0.5)), uint(floor(y * 0.5)), seed + 500u);
+
+    // Warm patches
+    n.warm = valueNoise(fx1, fy1, seed + 700u);
+
+    // Wave noise
+    n.wave = valueNoise(fx2, fy2, seed + 1000u);
+
+    // Imperfection spots
+    n.imperfection = valueNoise(fx3, fy3, seed + 7000u);
+
+    return n;
 }
 
-// ---------- Main compute shader ----------
+// ---------- OPTIMIZED VORONOI ----------
+mediump float voronoi(highp float x, highp float y, uint seed) {
+    highp vec2 p = vec2(floor(x), floor(y));
+    mediump float minDistSq = 1.0;
+
+    // 4 diagonal neighbours only (cheaper)
+    for (int dy = -1; dy <= 1; dy += 2) {
+        for (int dx = -1; dx <= 1; dx += 2) {
+            vec2 cell = p + vec2(dx, dy);
+            uint h = hash(uint(cell.x), uint(cell.y), seed);
+            vec2 offset = vec2(
+                float(h & 0xFFFF) / 65536.0,
+                float((h >> 16) & 0xFFFF) / 65536.0
+            );
+            // FIXED: 2D distance
+            vec2 diff = vec2(
+                x - cell.x - offset.x,
+                y - cell.y - offset.y
+            );
+            float d = dot(diff, diff); // squared distance (no sqrt)
+            minDistSq = min(minDistSq, d);
+        }
+    }
+    return sqrt(minDistSq); // only one sqrt
+}
+
+// ---------- COMBINED PAPER TEXTURE ----------
+mediump float paperTexture(highp float x, highp float y, uint seed, NoiseCache n) {
+    // Use cached grain + voronoi
+    mediump float v = voronoi(x * fiberScale, y * fiberScale, seed + 500u);
+    // blend grain and voronoi
+    return mix(n.base, v, grainStrength);
+}
+
+// ---------- INK BLEED (cheap) ----------
+mediump float inkBleed(highp float d, uint seed) {
+    mediump float n = valueNoise(d * 8.0, float(seed & 0xFFFF), seed);
+    return clamp(0.4 + 0.6 * n, 0.0, 1.0);
+}
+
+// ---------- MAIN SHADER ----------
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     if (pos.x >= int(imageSize.x) || pos.y >= int(imageSize.y))
         return;
 
-    // Convert to float coordinates
-    float fx = float(pos.x);
-    float fy = float(pos.y);
+    highp float fx = float(pos.x);
+    highp float fy = float(pos.y);
 
-    // Determine if we are on a line or margin
-    float halfThick = lineThickness * 0.5;
+    // ---------- GENERATE NOISE CACHE ONCE ----------
+    NoiseCache n = generateNoiseCache(fx, fy, seed);
+
+    // ---------- PAPER BACKGROUND ----------
+    mediump float grain = paperTexture(fx, fy, seed, n);
+    mediump float brightness = 0.94 + grain * 0.08;
+    brightness = clamp(brightness, 0.86, 1.0);
+    vec3 paperColor = baseColor * brightness;
+
+    // Warm/cool patches (reuse cached n.warm)
+    paperColor.r += n.warm * 0.015;
+    paperColor.b -= n.warm * 0.015;
+    paperColor = clamp(paperColor, 0.8, 1.0);
+
+    // ---------- ORGANIC LINE DISPLACEMENT ----------
+    mediump float halfThick = lineThickness * 0.5;
+    mediump float lineFalloff = 1.5;
+
+    // Use cached wave noise
+    mediump float waveX = sin(fx * 0.005 + float(seed) * 0.1) * waveAmplitude;
+    mediump float yOffset = waveX + (n.wave * 1.2 - 0.6);
+
+    // Incline
+    mediump float incline = inclineSlope * fx;
+    highp float effectiveY = fy + yOffset + incline;
+
+    // ---------- LINE DETECTION ----------
+    mediump float lineDist = 9999.0;
     bool isLine = false;
     if (lineSpacing > 0.0) {
-        float rem = mod(float(pos.y), lineSpacing);
-        isLine = (rem <= halfThick || rem >= lineSpacing - halfThick);
+        mediump float rem = mod(effectiveY, lineSpacing);
+        mediump float distToLine = min(rem, lineSpacing - rem);
+        lineDist = distToLine;
+        if (distToLine < halfThick + lineFalloff) {
+            isLine = true;
+        }
     }
 
-    bool hasMargin = (marginLeft > 0.0);
-    bool isMargin = hasMargin && (float(pos.x) >= marginLeft - halfThick && 
-                                  float(pos.x) <= marginLeft + halfThick);
+    // Margin with wave
+    mediump float marginWave = sin(fy * 0.003 + float(seed) * 0.05) * 0.5;
+    highp float effectiveMarginX = marginLeft + marginWave;
+    mediump float marginDist = abs(fx - effectiveMarginX);
+    bool isMargin = (marginLeft > 0.0) && (marginDist < halfThick + lineFalloff);
 
-    vec3 finalColor;
+    // ---------- RENDER ----------
+    vec3 finalColor = paperColor;
+
     if (isMargin) {
-        finalColor = marginColor;
+        mediump float d = marginDist - halfThick;
+        mediump float alpha = 1.0 - smoothstep(0.0, lineFalloff, max(0.0, d));
+        mediump float bleed = inkBleed(d, seed + 2000u);
+        // Reuse n.warm for spread (saves a noise call)
+        mediump float spread = n.warm;
+        alpha = clamp(alpha * (0.75 + bleedAmount * bleed) + (spread - 0.5) * 0.08, 0.0, 1.0);
+        finalColor = mix(paperColor, marginColor, alpha);
     } else if (isLine) {
-        finalColor = lineColor;
-    } else {
-        // Generate paper grain using FBM noise with the given seed
-        float n = fbm(fx, fy, seed);
-        float brightness = 0.975 + n * 0.05;
-        brightness = clamp(brightness, 0.9, 1.0);
-        finalColor = baseColor * brightness;
+        mediump float d = lineDist - halfThick;
+        mediump float alpha = 1.0 - smoothstep(0.0, lineFalloff, max(0.0, d));
+        mediump float bleed = inkBleed(d, seed + 4000u);
+        // Reuse n.wave for density (saves a noise call)
+        mediump float density = n.wave;
+        alpha = clamp(alpha * (0.85 + 0.15 * density) * (0.75 + 0.25 * bleed), 0.0, 1.0);
+
+        // Ink color variation – reuse n.warm
+        mediump float var = n.warm - 0.5;
+        vec3 inkColor = lineColor + var * 0.04;
+        inkColor = clamp(inkColor, 0.0, 1.0);
+
+        finalColor = mix(paperColor, inkColor, alpha);
     }
 
-    // Write to output image (alpha = 1.0)
-    imageStore(outputImage, pos, vec4(finalColor, 1.0));
+    // ---------- PAPER IMPERFECTIONS (branchless) ----------
+    mediump float spotEffect = smoothstep(spotThreshold, 1.0, n.imperfection);
+    finalColor *= (1.0 - spotEffect * 0.06);
+
+    mediump float lightEffect = smoothstep(0.96, 1.0, n.detail);
+    finalColor *= (1.0 + lightEffect * 0.04);
+
+    // ---------- OUTPUT ----------
+    imageStore(outputImage, pos, vec4(clamp(finalColor, 0.0, 1.0), 1.0));
 }
