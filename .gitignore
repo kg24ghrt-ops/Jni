@@ -1,33 +1,50 @@
 ```
-# Gradle
-.gradle/
+# Compiled and build artifacts
+*.class
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.out
 build/
-!gradle/wrapper/
+dist/
 
-# IDE
+# Dependencies
+node_modules/
+venv/
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+target/
+.gradle/
+
+# Editors
+.vscode/
 .idea/
-*.iml
-*.ipr
-*.iws
+*.swp
+*.swo
 
-# Logs
-*.log
-
-# Environment
-.env
-.env.local
-*.env*
-
-# OS
+# System
 .DS_Store
 Thumbs.db
+.env
+.env.local
+*.env.*
 
-# Kotlin
-*.kotlin_metadata
-*.class
+# Logs and temp files
+*.log
+*.tmp
 
-# Android
-*.apk
-*.aar
-local.properties
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Java/Kotlin specific
+*.jar
+*.war
+*.ear
 ```
