@@ -1,24 +1,39 @@
-# Built application files
-*.apk
-*.ap_
-*.aab
-*.dex
-*.class
-bin/
-gen/
-out/
-.gradle/
+```
+# Build artifacts
 build/
-local.properties
-proguard/
+*.apk
+*.aar
+*.jar
+*.class
+
+# Dependencies
+.gradle/
+node_modules/
+venv/
+.venv/
+
+# Logs and temp files
 *.log
-.navigation/
-captures/
-*.iml
+*.tmp
+*.swp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
 .idea/
-*.jks
-*.keystore
-.externalNativeBuild
-.cxx/
-google-services.json
-vcs.xml
+*.iml
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+```
