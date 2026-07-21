@@ -33,6 +33,10 @@
     ".kts": {
       "enabled": false,
       "run": "kotlin-language-server"
+    },
+    ".md": {
+      "enabled": true,
+      "run": "marksman server"
     }
   }
 }
