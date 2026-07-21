@@ -3,9 +3,9 @@ package com.example.homecil
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import org.scilab.forge.jlatexmath.TeXConstants
-import org.scilab.forge.jlatexmath.TeXFormula
-import org.scilab.forge.jlatexmath.TeXIcon
+import ru.noties.jlatexmath.TeXConstants
+import ru.noties.jlatexmath.TeXFormula
+import ru.noties.jlatexmath.TeXIcon
 import ru.noties.jlatexmath.android.AndroidGraphics2D
 import kotlin.math.ceil
 
