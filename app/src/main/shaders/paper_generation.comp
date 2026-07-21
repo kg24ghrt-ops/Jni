@@ -1,0 +1,108 @@
+#version 310 es
+
+// Workgroup size – each group processes 16x16 pixels
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Output image – RGBA8 (will be converted to RGB565 later in Kotlin)
+layout(rgba8, binding = 0) uniform highp writeonly image2D outputImage;
+
+// Uniforms – passed from CPU
+layout(std140, binding = 1) uniform Params {
+    highp vec2  imageSize;
+    highp float lineSpacing;
+    highp float marginLeft;
+    highp float lineThickness;
+    highp uint  seed;               // <-- unique seed for each call
+    highp vec3  lineColor;
+    highp vec3  marginColor;
+    highp vec3  baseColor;           // base paper color (off‑white)
+};
+
+// ---------- Seeded hash (produces random-looking float in [0,1]) ----------
+uint hash(uint x, uint y, uint seed) {
+    uint n = x ^ (y * 0x9e3779b9u) ^ seed;
+    n = n ^ (n << 13);
+    n = n ^ (n >> 17);
+    n = n ^ (n << 5);
+    return n;
+}
+
+float randHash(uint x, uint y, uint seed) {
+    return float(hash(x, y, seed)) / 4294967296.0;
+}
+
+// ---------- Value noise (using hash) ----------
+float noise(uint x, uint y, uint seed) {
+    return randHash(x, y, seed);
+}
+
+float smoothNoise(float x, float y, uint seed) {
+    uint ix = uint(floor(x));
+    uint iy = uint(floor(y));
+    float fx = x - float(ix);
+    float fy = y - float(iy);
+    float sx = fx * fx * (3.0 - 2.0 * fx);
+    float sy = fy * fy * (3.0 - 2.0 * fy);
+
+    float n00 = noise(ix,     iy,     seed);
+    float n10 = noise(ix + 1u, iy,     seed);
+    float n01 = noise(ix,     iy + 1u, seed);
+    float n11 = noise(ix + 1u, iy + 1u, seed);
+
+    float nx0 = mix(n00, n10, sx);
+    float nx1 = mix(n01, n11, sx);
+    return mix(nx0, nx1, sy);
+}
+
+float fbm(float x, float y, uint seed) {
+    float value = 0.0;
+    float amplitude = 0.5;
+    float frequency = 0.01;
+    float persistence = 0.6;
+    uint octaves = 4u;
+    for (uint i = 0u; i < octaves; i++) {
+        value += amplitude * smoothNoise(x * frequency, y * frequency, seed + i);
+        amplitude *= persistence;
+        frequency *= 2.0;
+    }
+    return value;
+}
+
+// ---------- Main compute shader ----------
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= int(imageSize.x) || pos.y >= int(imageSize.y))
+        return;
+
+    // Convert to float coordinates
+    float fx = float(pos.x);
+    float fy = float(pos.y);
+
+    // Determine if we are on a line or margin
+    float halfThick = lineThickness * 0.5;
+    bool isLine = false;
+    if (lineSpacing > 0.0) {
+        float rem = mod(float(pos.y), lineSpacing);
+        isLine = (rem <= halfThick || rem >= lineSpacing - halfThick);
+    }
+
+    bool hasMargin = (marginLeft > 0.0);
+    bool isMargin = hasMargin && (float(pos.x) >= marginLeft - halfThick && 
+                                  float(pos.x) <= marginLeft + halfThick);
+
+    vec3 finalColor;
+    if (isMargin) {
+        finalColor = marginColor;
+    } else if (isLine) {
+        finalColor = lineColor;
+    } else {
+        // Generate paper grain using FBM noise with the given seed
+        float n = fbm(fx, fy, seed);
+        float brightness = 0.975 + n * 0.05;
+        brightness = clamp(brightness, 0.9, 1.0);
+        finalColor = baseColor * brightness;
+    }
+
+    // Write to output image (alpha = 1.0)
+    imageStore(outputImage, pos, vec4(finalColor, 1.0));
+}
