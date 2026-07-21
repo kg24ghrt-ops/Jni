@@ -12,7 +12,7 @@ import com.example.homecil.databinding.ActivityMainBinding
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var writeMode = false
-    private var mathMode = false              // <-- new
+    private var mathMode = false
     private var lineStartX = 200f
     private var lineBaselineY = 400f
     private val textPaint = Paint().apply {
@@ -37,7 +37,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Write mode toggle (text)
+        // Text writing mode toggle
         binding.fabWriteMode.setOnClickListener {
             mathMode = false
             writeMode = !writeMode
@@ -57,10 +57,53 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startWriteMode() { /* ... same as before ... */ }
-    private fun stopWriteMode() { /* ... same as before ... */ }
+    // ========== TEXT WRITING MODE ==========
 
-    // ----- Math mode -----
+    private fun startWriteMode() {
+        lineBaselineY = binding.paperView.snapToLine(lineBaselineY)
+
+        binding.invisibleInput.visibility = View.VISIBLE
+        binding.invisibleInput.x = lineStartX
+        binding.invisibleInput.y = lineBaselineY
+        binding.invisibleInput.setText("")
+        binding.invisibleInput.requestFocus()
+        showKeyboard()
+
+        binding.paperView.clearAllInk()
+        lineStrokes.clear()
+
+        binding.invisibleInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                val text = s?.toString() ?: ""
+                updateLine(text)
+            }
+        })
+    }
+
+    private fun stopWriteMode() {
+        hideKeyboard()
+        binding.invisibleInput.visibility = View.GONE
+        binding.invisibleInput.clearFocus()
+    }
+
+    private fun updateLine(text: String) {
+        binding.paperView.clearAllInk()
+        lineStrokes.clear()
+        if (text.isEmpty()) return
+
+        val strokes = HandwritingRenderer.createClusterStrokes(
+            text, lineStartX, lineBaselineY, textPaint
+        )
+        lineStrokes.addAll(strokes)
+        for (stroke in lineStrokes) {
+            binding.paperView.addInkStroke(stroke)
+        }
+    }
+
+    // ========== MATH MODE ==========
+
     private fun startMathMode() {
         lineBaselineY = binding.paperView.snapToLine(lineBaselineY)
 
@@ -92,7 +135,7 @@ class MainActivity : AppCompatActivity() {
         val stroke = MathRenderer.createMathStroke(
             latex, lineStartX, lineBaselineY,
             textPaint.textSize,
-            seed = latex.hashCode()   // different each time
+            seed = latex.hashCode()
         )
         if (stroke != null) {
             lineStrokes.add(stroke)
@@ -106,5 +149,15 @@ class MainActivity : AppCompatActivity() {
         binding.invisibleInput.clearFocus()
     }
 
-    // ... (existing methods for text writing, keyboard, etc.)
+    // ========== KEYBOARD HELPERS ==========
+
+    private fun showKeyboard() {
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.showSoftInput(binding.invisibleInput, 0)
+    }
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(binding.invisibleInput.windowToken, 0)
+    }
 }
