@@ -7,4 +7,7 @@
     
     <string name="welcome">Realistic paper is ready</string>
 
+    <string name="toggle_paper_style">Toggle paper style</string>
+   <string name="toggle_text_mode">Toggle writing mode</string>
+   <string name="toggle_math_mode">Toggle math mode</string>
 </resources>

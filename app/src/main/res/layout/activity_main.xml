@@ -8,6 +8,7 @@
     android:layout_height="match_parent"
     android:background="@android:color/white">
 
+    <!-- The main paper view (zoomable, pannable, ink‑enabled) -->
     <com.example.homecil.PaperView
         android:id="@+id/paperView"
         android:layout_width="0dp"
@@ -17,7 +18,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Transparent EditText for cursor & keyboard input -->
+    <!-- Hidden EditText used for keyboard input (text / math mode) -->
     <EditText
         android:id="@+id/invisibleInput"
         android:layout_width="wrap_content"
@@ -30,9 +31,11 @@
         android:visibility="gone"
         android:focusable="true"
         android:focusableInTouchMode="true"
-        tools:visibility="visible" />
+        tools:visibility="visible"
+        tools:layout_editor_absoluteX="200dp"
+        tools:layout_editor_absoluteY="400dp" />
 
-    <!-- Welcome overlay -->
+    <!-- Welcome message (does not block touches) -->
     <TextView
         android:id="@+id/welcomeText"
         android:layout_width="wrap_content"
@@ -47,26 +50,38 @@
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 
-    <!-- Paper style FAB (existing) -->
+    <!-- FAB 1: Cycle paper style (realistic → plain → lined) -->
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/fabTogglePaper"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_margin="16dp"
-        android:contentDescription="Toggle paper style"
+        android:contentDescription="@string/toggle_paper_style"
         android:src="@android:drawable/ic_menu_gallery"
         app:layout_constraintBottom_toTopOf="@+id/fabWriteMode"
         app:layout_constraintEnd_toEndOf="parent"
         app:tint="@android:color/white" />
 
-    <!-- Writing mode FAB (new) -->
+    <!-- FAB 2: Toggle text writing mode -->
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/fabWriteMode"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_margin="16dp"
-        android:contentDescription="Toggle writing mode"
+        android:contentDescription="@string/toggle_text_mode"
         android:src="@android:drawable/ic_media_ff"
+        app:layout_constraintBottom_toTopOf="@+id/fabMathMode"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:tint="@android:color/white" />
+
+    <!-- FAB 3: Toggle math (LaTeX) mode -->
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/fabMathMode"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:contentDescription="@string/toggle_math_mode"
+        android:src="@android:drawable/ic_menu_sort_alphabetically"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:tint="@android:color/white" />
