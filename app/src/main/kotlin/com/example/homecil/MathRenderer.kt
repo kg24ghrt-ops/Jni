@@ -3,10 +3,10 @@ package com.example.homecil
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import org.scilab.forge.jlatexmath.AndroidGraphics2D
-import org.scilab.forge.jlatexmath.TeXConstants
-import org.scilab.forge.jlatexmath.TeXFormula
-import org.scilab.forge.jlatexmath.TeXIcon
+import ru.noties.jlatexmath.AndroidGraphics2D
+import ru.noties.jlatexmath.TeXConstants
+import ru.noties.jlatexmath.TeXFormula
+import ru.noties.jlatexmath.TeXIcon
 import kotlin.math.ceil
 
 object MathRenderer {
@@ -33,12 +33,9 @@ object MathRenderer {
 
         // 1. Build the TeX icon with the correct style and size
         val formula = TeXFormula(latex)
-        val icon: TeXIcon = formula.new TeXIconBuilder()
-            .setStyle(TeXConstants.STYLE_DISPLAY)
-            .setSize(textSize)
-            .build()
+        val icon: TeXIcon = formula.createTeXIcon(TeXConstants.STYLE_DISPLAY, textSize)
 
-        val w = icon.iconWidth   // these are floats
+        val w = icon.iconWidth
         val h = icon.iconHeight
         if (w <= 0f || h <= 0f) return null
 
@@ -49,7 +46,6 @@ object MathRenderer {
         val bmp = Bitmap.createBitmap(bmpWidth, bmpHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val g2d = AndroidGraphics2D(canvas)
-        // paintIcon with null Component (safe on Android) – background is transparent
         icon.paintIcon(null, g2d, 0, 0)
 
         // 3. Replace black (the default foreground) with gel‑pen blue
