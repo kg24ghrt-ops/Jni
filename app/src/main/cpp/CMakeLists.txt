@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.18.1)
 project("homecil_native")
 
 # ------------------------------------------------------------------
-# SHADER COMPILATION
+# SHADER COMPILATION (OpenGL ES SPIR‑V)
 # ------------------------------------------------------------------
 set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/src/main/shaders)
 set(SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
@@ -17,7 +17,13 @@ if(NOT GLSLANG_VALIDATOR)
     message(FATAL_ERROR "glslangValidator not found. Install NDK or set PATH.")
 endif()
 
-# Macro to compile GLSL .comp → SPIR‑V for OpenGL ES (‑G flag)
+# Find xxd
+find_program(XXD xxd)
+if(NOT XXD)
+    message(FATAL_ERROR "xxd not found. Install it.")
+endif()
+
+# Macro: compile .comp → .spv (OpenGL ES mode: -G)
 macro(compile_shader_glsl INPUT_FILE OUTPUT_SPV)
     set(FULL_INPUT ${SHADER_SRC_DIR}/${INPUT_FILE})
     set(FULL_OUTPUT ${SHADER_OUT_DIR}/${OUTPUT_SPV})
@@ -25,7 +31,7 @@ macro(compile_shader_glsl INPUT_FILE OUTPUT_SPV)
         OUTPUT ${FULL_OUTPUT}
         COMMAND ${GLSLANG_VALIDATOR} -G -o ${FULL_OUTPUT} ${FULL_INPUT}
         DEPENDS ${FULL_INPUT}
-        COMMENT "Compiling ${INPUT_FILE} → ${OUTPUT_SPV}"
+        COMMENT "Compiling ${INPUT_FILE} → ${OUTPUT_SPV} (OpenGL ES SPIR‑V)"
     )
     list(APPEND SHADER_SPV_FILES ${FULL_OUTPUT})
 endmacro()
@@ -36,13 +42,13 @@ compile_shader_glsl(ink_physics.comp ink_physics.spv)
 compile_shader_glsl(ink_composite.comp ink_composite.spv)
 compile_shader_glsl(paper_generation.comp paper_generation.spv)
 
-# Macro to embed .spv as C array using xxd
+# Macro: embed .spv → .h (C array)
 macro(embed_spv INPUT_SPV OUTPUT_HEADER)
     set(FULL_INPUT ${SHADER_OUT_DIR}/${INPUT_SPV})
     set(FULL_OUTPUT ${SHADER_EMBED_DIR}/${OUTPUT_HEADER})
     add_custom_command(
         OUTPUT ${FULL_OUTPUT}
-        COMMAND xxd -i ${FULL_INPUT} > ${FULL_OUTPUT}
+        COMMAND ${XXD} -i ${FULL_INPUT} > ${FULL_OUTPUT}
         DEPENDS ${FULL_INPUT}
         COMMENT "Embedding ${INPUT_SPV} → ${OUTPUT_HEADER}"
     )
@@ -61,7 +67,7 @@ add_library(native-lib SHARED
         native-lib.cpp
         ink_engine.cpp
         distort_engine.cpp
-        shader_loader.cpp   # new
+        shader_loader.cpp
 )
 
 # Include generated headers
@@ -85,5 +91,5 @@ target_link_libraries(native-lib
         ${GLESv3-lib}
 )
 
-# Dependencies: build shaders before compiling
+# Build shaders before compiling native library
 add_dependencies(native-lib ${SHADER_HEADERS})

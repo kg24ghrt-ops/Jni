@@ -4,19 +4,47 @@
 #include <GLES3/gl31.h>
 #include <cstring>
 #include <ctime>
-#include "shader_loader.h"   // new
+#include "shader_loader.h"   // provides getPaperProgram()
 
-// Remove old PAPER_SHADER string
-
-// ---------- EGL / GL state (same as before) ----------
+// ---------- EGL / GL state ----------
 static EGLDisplay eglDisplay = EGL_NO_DISPLAY;
 static EGLContext eglContext = EGL_NO_CONTEXT;
 static EGLSurface eglSurface = EGL_NO_SURFACE;
 static bool glInitialized = false;
 
-static bool initOpenGL() {
+// ---------- GL initialization (shared with ink_engine.cpp) ----------
+bool initOpenGL() {
     if (glInitialized) return true;
-    // ... (same as before) ...
+
+    eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (eglDisplay == EGL_NO_DISPLAY) return false;
+    if (!eglInitialize(eglDisplay, nullptr, nullptr)) return false;
+
+    EGLint attribs[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_NONE
+    };
+    EGLConfig config;
+    EGLint numConfigs;
+    if (!eglChooseConfig(eglDisplay, attribs, &config, 1, &numConfigs) || numConfigs == 0)
+        return false;
+
+    EGLint pbufferAttribs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
+    eglSurface = eglCreatePbufferSurface(eglDisplay, config, pbufferAttribs);
+    if (eglSurface == EGL_NO_SURFACE) return false;
+
+    EGLint ctxAttribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+    eglContext = eglCreateContext(eglDisplay, config, EGL_NO_CONTEXT, ctxAttribs);
+    if (eglContext == EGL_NO_CONTEXT) return false;
+
+    if (!eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext))
+        return false;
+
     glInitialized = true;
     return true;
 }
@@ -47,7 +75,7 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
         return;
     }
 
-    // Get the pre‑compiled program
+    // Get the pre‑compiled paper program
     GLuint program = getPaperProgram();
     if (!program) {
         AndroidBitmap_unlockPixels(env, bitmap);
@@ -65,7 +93,7 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
 
     glUseProgram(program);
 
-    // Helper to set uniforms (same as before)
+    // Helper lambdas for setting uniforms
     auto setVec3 = [&](const char* name, int color) {
         GLint loc = glGetUniformLocation(program, name);
         if (loc >= 0) {
@@ -84,6 +112,7 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
         if (loc >= 0) glUniform1ui(loc, value);
     };
 
+    // Set uniforms – exact same as before
     glUniform2f(glGetUniformLocation(program, "uImageSize"), width, height);
     glUniform1f(glGetUniformLocation(program, "uLineSpacing"), lineSpacing);
     glUniform1f(glGetUniformLocation(program, "uMarginLeft"), marginLeft);
@@ -93,7 +122,7 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
     setVec3("uMarginColor", marginColor);
     setVec3("uBaseColor", 0xFDFDFB);
 
-    // New tunable defaults
+    // New tunable parameters (defaults)
     setFloat("uFiberScale", 0.2f);
     setFloat("uGrainStrength", 0.3f);
     setFloat("uBleedAmount", 0.25f);
@@ -104,14 +133,22 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
     setFloat("uPaperAge", 0.5f);
     setFloat("uLineWarp", 0.3f);
 
+    // Dispatch
     int workX = (width + 15) / 16;
     int workY = (height + 15) / 16;
     glDispatchCompute(workX, workY, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-    // Read back
+    // Read back to bitmap
+    // Bind the texture to a framebuffer and read pixels
+    GLuint fbo;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
     glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glDeleteFramebuffers(1, &fbo);
 
+    // Cleanup
     glDeleteTextures(1, &texture);
     AndroidBitmap_unlockPixels(env, bitmap);
 }

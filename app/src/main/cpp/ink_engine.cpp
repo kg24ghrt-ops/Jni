@@ -5,7 +5,7 @@
 #include <cstring>
 #include <ctime>
 #include <algorithm>
-#include "shader_loader.h"   // <-- includes getCapillaryProgram(), getPhysicsProgram(), getCompositeProgram()
+#include "shader_loader.h"   // provides getCapillaryProgram(), getPhysicsProgram(), getCompositeProgram()
 
 // ---------- Constants ----------
 static const float SIMULATION_SCALE = 0.5f; // 50% resolution
@@ -29,8 +29,8 @@ struct DirtyRect {
     bool valid;
 } dirtyRect = {0, 0, 0, 0, false};
 
-// ---------- Forward declarations (implemented elsewhere) ----------
-bool initOpenGL();   // in native-lib.cpp or shared header
+// ---------- Forward declarations ----------
+bool initOpenGL();   // defined in native-lib.cpp
 
 // ---------- Helper function prototypes ----------
 void ensureTextures();
@@ -39,6 +39,7 @@ void updateDirtyRect(int offsetX, int offsetY, int stampW, int stampH);
 void runPhysicsSimulation(GLuint stampTexture);
 void runComposite();
 void readBackToBitmap(void* paperPixels);
+GLuint uploadStampTexture(void* pixels, int width, int height);
 
 // ---------- JNI Entry Point ----------
 extern "C"
@@ -210,7 +211,7 @@ void runPhysicsSimulation(GLuint stampTexture) {
     glBindTexture(GL_TEXTURE_2D, capillaryMap);
     glUniform1i(glGetUniformLocation(program, "uCapillaryMap"), 1);
 
-    // Bind ink textures
+    // Bind ink textures (read/write)
     glBindImageTexture(0, inputTex, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
     glBindImageTexture(1, outputTex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 
@@ -228,18 +229,18 @@ void runPhysicsSimulation(GLuint stampTexture) {
         if (loc >= 0) glUniform4f(loc, x, y, z, w);
     };
 
-    setVec2("uSimSize", simWidth, simHeight);
-    setVec2("uFullSize", fullWidth, fullHeight);
+    setVec2("uSimSize", (float)simWidth, (float)simHeight);
+    setVec2("uFullSize", (float)fullWidth, (float)fullHeight);
     setVec2("uStampSize", (float)(fullWidth * SIMULATION_SCALE), (float)(fullHeight * SIMULATION_SCALE));
     setVec2("uStampOffset", 0.0f, 0.0f);
-    setVec4("uDirtyRect", dirtyRect.x, dirtyRect.y, dirtyRect.w, dirtyRect.h);
+    setVec4("uDirtyRect", (float)dirtyRect.x, (float)dirtyRect.y, (float)dirtyRect.w, (float)dirtyRect.h);
     setFloat("uDiffusionRate", 0.08f);
     setFloat("uCapillaryStrength", 0.3f);
     setFloat("uAbsorption", 0.02f);
     setFloat("uEvaporation", 0.001f);
     setFloat("uTimeStep", 0.05f);
 
-    // Dispatch the entire simulation (physics shader uses dirty rect internally)
+    // Dispatch entire simulation (physics shader uses dirty rect internally)
     int workX = (simWidth + 15) / 16;
     int workY = (simHeight + 15) / 16;
     glDispatchCompute(workX, workY, 1);
@@ -268,8 +269,8 @@ void runComposite() {
 
     glBindImageTexture(0, outputTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 
-    glUniform2f(glGetUniformLocation(program, "uFullSize"), fullWidth, fullHeight);
-    glUniform2f(glGetUniformLocation(program, "uSimSize"), simWidth, simHeight);
+    glUniform2f(glGetUniformLocation(program, "uFullSize"), (float)fullWidth, (float)fullHeight);
+    glUniform2f(glGetUniformLocation(program, "uSimSize"), (float)simWidth, (float)simHeight);
 
     int workX = (fullWidth + 15) / 16;
     int workY = (fullHeight + 15) / 16;
@@ -284,4 +285,15 @@ void readBackToBitmap(void* paperPixels) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outputTexture, 0);
     glReadPixels(0, 0, fullWidth, fullHeight, GL_RGBA, GL_UNSIGNED_BYTE, paperPixels);
     glDeleteFramebuffers(1, &fbo);
+}
+
+GLuint uploadStampTexture(void* pixels, int width, int height) {
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    return tex;
 }

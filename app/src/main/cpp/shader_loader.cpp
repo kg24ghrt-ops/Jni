@@ -11,14 +11,12 @@ static GLuint loadShaderFromSPIRV(const void* data, size_t size) {
     GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
     if (!shader) return 0;
 
-    // glShaderBinary with SPIR‑V
     glShaderBinary(1, &shader, GL_SHADER_BINARY_FORMAT_SPIR_V, data, size);
     if (glGetError() != GL_NO_ERROR) {
         glDeleteShader(shader);
         return 0;
     }
 
-    // Specialize the shader (required for SPIR‑V)
     glSpecializeShader(shader, "main", 0, nullptr, nullptr);
     if (glGetError() != GL_NO_ERROR) {
         glDeleteShader(shader);
