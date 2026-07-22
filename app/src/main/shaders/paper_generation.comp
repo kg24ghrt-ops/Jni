@@ -2,7 +2,7 @@
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
-layout(rgba8, binding = 0, writeonly) uniform image2D outputImage;
+layout(rgba8, binding = 0) writeonly uniform image2D outputImage;
 
 layout(push_constant) uniform PushConstants {
     vec2  uImageSize;
@@ -25,7 +25,7 @@ layout(push_constant) uniform PushConstants {
     float uLineWarp;
 } pc;
 
-// ---- Core noise ----
+// ---- Optimized noise with 6 octaves for realism ----
 uint hash(uint x, uint y, uint seed) {
     uint n = x ^ (y * 0x9e3779b9u) ^ seed;
     n = n ^ (n << 13);
@@ -71,10 +71,11 @@ NoiseCache generateNoiseCache(float x, float y, uint seed) {
     n.warp = valueNoise(x * 0.005, y * 0.005, seed + 800u);
     n.aging = valueNoise(x * 0.02, y * 0.02, seed + 900u);
 
+    // 6 octaves for richer paper grain (performance impact minimal on Vulkan)
     float grain = 0.0;
     float amp = 0.5;
     float freq = 0.008;
-    for (uint i = 0u; i < 4u; i++) {
+    for (uint i = 0u; i < 6u; i++) {
         grain += amp * valueNoise(x * freq, y * freq, seed + i * 131u);
         amp *= 0.6;
         freq *= 2.0;
@@ -120,6 +121,10 @@ float inkBleed(float d, uint seed) {
     return clamp(0.4 + 0.6 * n, 0.0, 1.0);
 }
 
+// Specialization constants
+layout(constant_id = 0) const bool ENABLE_VIGNETTE = true;
+layout(constant_id = 1) const bool ENABLE_AGING = true;
+
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     if (pos.x >= int(pc.uImageSize.x) || pos.y >= int(pc.uImageSize.y))
@@ -132,25 +137,31 @@ void main() {
 
     NoiseCache n = generateNoiseCache(fx, fy, pc.uSeed);
 
+    // Paper aging (warm, organic tones)
     vec3 warmBase = vec3(0.95, 0.93, 0.89);
     float aging = n.aging * pc.uPaperAge;
     vec3 agedColor = warmBase + vec3(aging * 0.04, aging * 0.02, -aging * 0.03);
     agedColor = clamp(agedColor, 0.82, 0.98);
 
+    // Grain with 6-octave FBM for rich texture
     float grain = paperTexture(fx, fy, pc.uSeed, n);
     float brightness = 0.94 + grain * 0.08;
     brightness = clamp(brightness, 0.86, 1.0);
     vec3 paperColor = agedColor * brightness;
 
-    vec2 centerVec = vec2(cx - 0.5, cy - 0.5);
-    float distFromCenter = length(centerVec);
-    float vignette = 1.0 - (distFromCenter * distFromCenter * pc.uVignetteStrength);
-    float vignetteNoise = valueNoise(fx * 0.01, fy * 0.01, pc.uSeed + 10000u) * 0.1;
-    vignette = clamp(vignette + vignetteNoise, 0.65, 1.0);
-    float edgeFalloff = 1.0 - pow(distFromCenter * 1.2, 2.0) * 0.15;
-    edgeFalloff = clamp(edgeFalloff, 0.7, 1.0);
-    paperColor *= (vignette * edgeFalloff);
+    // Vignette (edge darkening)
+    if (ENABLE_VIGNETTE) {
+        vec2 centerVec = vec2(cx - 0.5, cy - 0.5);
+        float distFromCenter = length(centerVec);
+        float vignette = 1.0 - (distFromCenter * distFromCenter * pc.uVignetteStrength);
+        float vignetteNoise = valueNoise(fx * 0.01, fy * 0.01, pc.uSeed + 10000u) * 0.1;
+        vignette = clamp(vignette + vignetteNoise, 0.65, 1.0);
+        float edgeFalloff = 1.0 - pow(distFromCenter * 1.2, 2.0) * 0.15;
+        edgeFalloff = clamp(edgeFalloff, 0.7, 1.0);
+        paperColor *= (vignette * edgeFalloff);
+    }
 
+    // Lines with organic warp
     float halfThick = pc.uLineThickness * 0.5;
     float lineFalloff = 1.5;
 
@@ -170,6 +181,7 @@ void main() {
         if (distToLine < halfThick + lineFalloff) isLine = true;
     }
 
+    // Margin with rough edge (more realistic)
     float marginJitter = (n.detail - 0.5) * 1.5;
     float marginWave = sin(fy * 0.003 + float(pc.uSeed) * 0.05) * 0.5;
     float roughEdge = valueNoise(fy * 0.1, float(pc.uSeed) * 0.1, pc.uSeed + 1200u) * 0.8;
@@ -201,6 +213,7 @@ void main() {
         finalColor = mix(paperColor, inkColor, alpha);
     }
 
+    // Paper imperfections (wood pulp spots)
     float spotEffect = smoothstep(pc.uSpotThreshold, 1.0, n.imperfection);
     finalColor *= (1.0 - spotEffect * 0.06);
     float lightEffect = smoothstep(0.96, 1.0, n.detail);

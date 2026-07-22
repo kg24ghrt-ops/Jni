@@ -2,14 +2,13 @@
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// Resources
+// Resources – FIXED qualifier order
 layout(binding = 0) uniform sampler2D uStampTexture;
 layout(binding = 1) uniform sampler2D uCapillaryMap;
+layout(rgba8, binding = 2) readonly uniform image2D uInkInput;
+layout(rgba8, binding = 3) writeonly uniform image2D uInkOutput;
 
-layout(rgba8, binding = 2, readonly)  uniform image2D uInkInput;
-layout(rgba8, binding = 3, writeonly) uniform image2D uInkOutput;
-
-// Push constants (all uniforms)
+// Push constants – all uniforms, fast access
 layout(push_constant) uniform PushConstants {
     vec4  uDirtyRect;
     vec2  uSimSize;
@@ -21,13 +20,18 @@ layout(push_constant) uniform PushConstants {
     float uAbsorption;
     float uEvaporation;
     float uTimeStep;
+    uint  uIteration;       // NEW: for multi-pass realism
 } pc;
+
+// Specialization constants for compile-time optimization
+layout(constant_id = 0) const bool ENABLE_ANISOTROPIC = true;
+layout(constant_id = 1) const bool ENABLE_ABSORPTION = true;
 
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     if (pos.x >= int(pc.uSimSize.x) || pos.y >= int(pc.uSimSize.y)) return;
 
-    // Skip if outside dirty rectangle
+    // Skip outside dirty rectangle
     if (pos.x < int(pc.uDirtyRect.x) || pos.x >= int(pc.uDirtyRect.x + pc.uDirtyRect.z) ||
         pos.y < int(pc.uDirtyRect.y) || pos.y >= int(pc.uDirtyRect.y + pc.uDirtyRect.w)) {
         vec4 ink = imageLoad(uInkInput, pos);
@@ -41,38 +45,47 @@ void main() {
     // Load current ink
     vec4 ink = imageLoad(uInkInput, pos);
 
-    // Add stamp
-    vec2 stampUV = (vec2(pos) * (pc.uFullSize / pc.uSimSize) - pc.uStampOffset) / pc.uStampSize;
-    if (stampUV.x >= 0.0 && stampUV.x < 1.0 &&
-        stampUV.y >= 0.0 && stampUV.y < 1.0) {
-        vec4 stamp = texture(uStampTexture, stampUV);
-        float sa = stamp.a;
-        ink.rgb = mix(ink.rgb, stamp.rgb, sa * 0.85);
-        ink.a = min(1.0, ink.a + sa * 0.85);
+    // Add stamp (only on first iteration)
+    if (pc.uIteration == 0u) {
+        vec2 stampUV = (vec2(pos) * (pc.uFullSize / pc.uSimSize) - pc.uStampOffset) / pc.uStampSize;
+        if (stampUV.x >= 0.0 && stampUV.x < 1.0 &&
+            stampUV.y >= 0.0 && stampUV.y < 1.0) {
+            vec4 stamp = texture(uStampTexture, stampUV);
+            float sa = stamp.a;
+            ink.rgb = mix(ink.rgb, stamp.rgb, sa * 0.85);
+            ink.a = min(1.0, ink.a + sa * 0.85);
+        }
     }
 
-    // Fluid diffusion (anisotropic)
+    // Fluid diffusion – anisotropic if enabled
     vec4 center = ink;
     vec4 north = imageLoad(uInkInput, pos + ivec2(0, -1));
     vec4 south = imageLoad(uInkInput, pos + ivec2(0, 1));
     vec4 east  = imageLoad(uInkInput, pos + ivec2(1, 0));
     vec4 west  = imageLoad(uInkInput, pos + ivec2(-1, 0));
 
-    vec2 capillary = texture(uCapillaryMap, uv).rg;
+    vec4 diffused;
+    if (ENABLE_ANISOTROPIC) {
+        vec2 capillary = texture(uCapillaryMap, uv).rg;
+        float wN = 0.25 + pc.uCapillaryStrength * capillary.y;
+        float wS = 0.25 - pc.uCapillaryStrength * capillary.y;
+        float wE = 0.25 + pc.uCapillaryStrength * capillary.x;
+        float wW = 0.25 - pc.uCapillaryStrength * capillary.x;
+        float total = 1.0 + wN + wS + wE + wW;
+        diffused = (center + wN * north + wS * south + wE * east + wW * west) / total;
+    } else {
+        // Isotropic diffusion (faster)
+        diffused = (center + north + south + east + west) / 5.0;
+    }
 
-    float wN = 0.25 + pc.uCapillaryStrength * capillary.y;
-    float wS = 0.25 - pc.uCapillaryStrength * capillary.y;
-    float wE = 0.25 + pc.uCapillaryStrength * capillary.x;
-    float wW = 0.25 - pc.uCapillaryStrength * capillary.x;
-    float total = 1.0 + wN + wS + wE + wW;
-
-    vec4 diffused = (center + wN * north + wS * south + wE * east + wW * west) / total;
     ink = mix(ink, diffused, pc.uDiffusionRate * pc.uTimeStep);
 
-    // Absorption
-    ink.a *= (1.0 - pc.uAbsorption * pc.uTimeStep);
+    // Absorption (paper soaking ink)
+    if (ENABLE_ABSORPTION) {
+        ink.a *= (1.0 - pc.uAbsorption * pc.uTimeStep);
+    }
 
-    // Evaporation
+    // Evaporation (slow drying)
     ink.a *= (1.0 - pc.uEvaporation * pc.uTimeStep);
 
     // Clamp
