@@ -4,7 +4,8 @@ project("homecil_native")
 # ------------------------------------------------------------------
 # SHADER COMPILATION (OpenGL ES SPIR‑V)
 # ------------------------------------------------------------------
-set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/src/main/shaders)
+# Shader sources are now in app/shader_src/ (moved out of src/main/shaders)
+set(SHADER_SRC_DIR ${CMAKE_SOURCE_DIR}/../../shader_src)
 set(SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 set(SHADER_EMBED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
