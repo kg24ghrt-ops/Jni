@@ -4,7 +4,6 @@ layout(local_size_x = 16, local_size_y = 16) in;
 
 uniform highp sampler2D uStampTexture;
 uniform highp sampler2D uCapillaryMap;
-
 layout(rgba8, binding = 0) readonly uniform highp image2D uInkInput;
 layout(rgba8, binding = 1) writeonly uniform highp image2D uInkOutput;
 
@@ -21,58 +20,44 @@ uniform highp float uTimeStep;
 
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    if (pos.x >= int(uSimSize.x) || pos.y >= int(uSimSize.y))
-        return;
+    if (pos.x >= int(uSimSize.x) || pos.y >= int(uSimSize.y)) return;
 
-    // Skip if outside dirty rectangle
     if (pos.x < int(uDirtyRect.x) || pos.x >= int(uDirtyRect.x + uDirtyRect.z) ||
         pos.y < int(uDirtyRect.y) || pos.y >= int(uDirtyRect.y + uDirtyRect.w)) {
-        vec4 ink = imageLoad(uInkInput, pos);
-        imageStore(uInkOutput, pos, ink);
+        imageStore(uInkOutput, pos, imageLoad(uInkInput, pos));
         return;
     }
 
     vec2 uv = (vec2(pos) + 0.5) / uSimSize;
     vec2 offset = 1.0 / uSimSize;
 
-    // 1. Load current ink
     vec4 ink = imageLoad(uInkInput, pos);
 
-    // 2. Add stamp
     vec2 stampUV = (vec2(pos) * (uFullSize / uSimSize) - uStampOffset) / uStampSize;
-    if (stampUV.x >= 0.0 && stampUV.x < 1.0 &&
-        stampUV.y >= 0.0 && stampUV.y < 1.0) {
+    if (stampUV.x >= 0.0 && stampUV.x < 1.0 && stampUV.y >= 0.0 && stampUV.y < 1.0) {
         vec4 stamp = texture(uStampTexture, stampUV);
-        float stampAlpha = stamp.a;
-        ink.rgb = mix(ink.rgb, stamp.rgb, stampAlpha * 0.85);
-        ink.a = min(1.0, ink.a + stampAlpha * 0.85);
+        float sa = stamp.a;
+        ink.rgb = mix(ink.rgb, stamp.rgb, sa * 0.85);
+        ink.a = min(1.0, ink.a + sa * 0.85);
     }
 
-    // 3. Fluid diffusion (anisotropic)
     vec4 center = ink;
     vec4 north = imageLoad(uInkInput, pos + ivec2(0, -1));
     vec4 south = imageLoad(uInkInput, pos + ivec2(0, 1));
     vec4 east  = imageLoad(uInkInput, pos + ivec2(1, 0));
     vec4 west  = imageLoad(uInkInput, pos + ivec2(-1, 0));
 
-    vec2 capillary = texture(uCapillaryMap, uv).rg;
-
-    float wN = 0.25 + uCapillaryStrength * capillary.y;
-    float wS = 0.25 - uCapillaryStrength * capillary.y;
-    float wE = 0.25 + uCapillaryStrength * capillary.x;
-    float wW = 0.25 - uCapillaryStrength * capillary.x;
+    vec2 cap = texture(uCapillaryMap, uv).rg;
+    float wN = 0.25 + uCapillaryStrength * cap.y;
+    float wS = 0.25 - uCapillaryStrength * cap.y;
+    float wE = 0.25 + uCapillaryStrength * cap.x;
+    float wW = 0.25 - uCapillaryStrength * cap.x;
     float total = 1.0 + wN + wS + wE + wW;
-
-    vec4 diffused = (center + wN * north + wS * south + wE * east + wW * west) / total;
+    vec4 diffused = (center + wN*north + wS*south + wE*east + wW*west) / total;
     ink = mix(ink, diffused, uDiffusionRate * uTimeStep);
 
-    // 4. Absorption
     ink.a *= (1.0 - uAbsorption * uTimeStep);
-
-    // 5. Evaporation
     ink.a *= (1.0 - uEvaporation * uTimeStep);
-
-    // 6. Clamp
     ink.a = clamp(ink.a, 0.0, 1.0);
     ink.rgb = clamp(ink.rgb, 0.0, 1.0);
 

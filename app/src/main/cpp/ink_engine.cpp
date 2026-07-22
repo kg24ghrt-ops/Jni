@@ -4,15 +4,13 @@
 #include <GLES3/gl31.h>
 #include <cstring>
 #include <ctime>
+#include <algorithm>
+#include "shader_loader.h"   // <-- includes getCapillaryProgram(), getPhysicsProgram(), getCompositeProgram()
 
 // ---------- Constants ----------
 static const float SIMULATION_SCALE = 0.5f; // 50% resolution
 
 // ---------- GPU Resources ----------
-static GLuint physicsProgram = 0;
-static GLuint compositeProgram = 0;
-static GLuint capillaryProgram = 0;
-
 static GLuint paperTexture = 0;
 static GLuint capillaryMap = 0;
 static GLuint inkTextureA = 0;  // ping
@@ -30,6 +28,17 @@ struct DirtyRect {
     int x, y, w, h;
     bool valid;
 } dirtyRect = {0, 0, 0, 0, false};
+
+// ---------- Forward declarations (implemented elsewhere) ----------
+bool initOpenGL();   // in native-lib.cpp or shared header
+
+// ---------- Helper function prototypes ----------
+void ensureTextures();
+void generateCapillaryMap();
+void updateDirtyRect(int offsetX, int offsetY, int stampW, int stampH);
+void runPhysicsSimulation(GLuint stampTexture);
+void runComposite();
+void readBackToBitmap(void* paperPixels);
 
 // ---------- JNI Entry Point ----------
 extern "C"
@@ -134,10 +143,9 @@ void ensureTextures() {
 }
 
 void generateCapillaryMap() {
-    // Compile capillary shader (once)
-    if (capillaryProgram == 0) {
-        capillaryProgram = createComputeProgram(capillaryShaderSource);
-    }
+    // Get the pre‑compiled capillary program
+    GLuint program = getCapillaryProgram();
+    if (!program) return;
 
     // Create capillary map texture (RG32F)
     glGenTextures(1, &capillaryMap);
@@ -147,10 +155,10 @@ void generateCapillaryMap() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     // Dispatch
-    glUseProgram(capillaryProgram);
+    glUseProgram(program);
     glBindImageTexture(0, capillaryMap, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RG32F);
-    glUniform2f(glGetUniformLocation(capillaryProgram, "uMapSize"), simWidth, simHeight);
-    glUniform1ui(glGetUniformLocation(capillaryProgram, "uSeed"), (uint32_t)time(nullptr));
+    glUniform2f(glGetUniformLocation(program, "uMapSize"), simWidth, simHeight);
+    glUniform1ui(glGetUniformLocation(program, "uSeed"), (uint32_t)time(nullptr));
 
     int workX = (simWidth + 15) / 16;
     int workY = (simHeight + 15) / 16;
@@ -184,23 +192,23 @@ void updateDirtyRect(int offsetX, int offsetY, int stampW, int stampH) {
 }
 
 void runPhysicsSimulation(GLuint stampTexture) {
-    if (physicsProgram == 0) {
-        physicsProgram = createComputeProgram(inkPhysicsShaderSource);
-    }
+    // Get the pre‑compiled physics program
+    GLuint program = getPhysicsProgram();
+    if (!program) return;
 
     GLuint inputTex = useTextureA ? inkTextureA : inkTextureB;
     GLuint outputTex = useTextureA ? inkTextureB : inkTextureA;
 
-    glUseProgram(physicsProgram);
+    glUseProgram(program);
 
     // Bind textures
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, stampTexture);
-    glUniform1i(glGetUniformLocation(physicsProgram, "uStampTexture"), 0);
+    glUniform1i(glGetUniformLocation(program, "uStampTexture"), 0);
 
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, capillaryMap);
-    glUniform1i(glGetUniformLocation(physicsProgram, "uCapillaryMap"), 1);
+    glUniform1i(glGetUniformLocation(program, "uCapillaryMap"), 1);
 
     // Bind ink textures
     glBindImageTexture(0, inputTex, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
@@ -208,15 +216,15 @@ void runPhysicsSimulation(GLuint stampTexture) {
 
     // Set uniforms
     auto setFloat = [&](const char* name, float value) {
-        GLint loc = glGetUniformLocation(physicsProgram, name);
+        GLint loc = glGetUniformLocation(program, name);
         if (loc >= 0) glUniform1f(loc, value);
     };
     auto setVec2 = [&](const char* name, float x, float y) {
-        GLint loc = glGetUniformLocation(physicsProgram, name);
+        GLint loc = glGetUniformLocation(program, name);
         if (loc >= 0) glUniform2f(loc, x, y);
     };
     auto setVec4 = [&](const char* name, float x, float y, float z, float w) {
-        GLint loc = glGetUniformLocation(physicsProgram, name);
+        GLint loc = glGetUniformLocation(program, name);
         if (loc >= 0) glUniform4f(loc, x, y, z, w);
     };
 
@@ -231,7 +239,7 @@ void runPhysicsSimulation(GLuint stampTexture) {
     setFloat("uEvaporation", 0.001f);
     setFloat("uTimeStep", 0.05f);
 
-    // Dispatch only the dirty region (or the whole simulation if dirty rect is large)
+    // Dispatch the entire simulation (physics shader uses dirty rect internally)
     int workX = (simWidth + 15) / 16;
     int workY = (simHeight + 15) / 16;
     glDispatchCompute(workX, workY, 1);
@@ -242,26 +250,26 @@ void runPhysicsSimulation(GLuint stampTexture) {
 }
 
 void runComposite() {
-    if (compositeProgram == 0) {
-        compositeProgram = createComputeProgram(inkCompositeShaderSource);
-    }
+    // Get the pre‑compiled composite program
+    GLuint program = getCompositeProgram();
+    if (!program) return;
 
     GLuint inkTex = useTextureA ? inkTextureA : inkTextureB;
 
-    glUseProgram(compositeProgram);
+    glUseProgram(program);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, paperTexture);
-    glUniform1i(glGetUniformLocation(compositeProgram, "uPaperTexture"), 0);
+    glUniform1i(glGetUniformLocation(program, "uPaperTexture"), 0);
 
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, inkTex);
-    glUniform1i(glGetUniformLocation(compositeProgram, "uInkTexture"), 1);
+    glUniform1i(glGetUniformLocation(program, "uInkTexture"), 1);
 
     glBindImageTexture(0, outputTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 
-    glUniform2f(glGetUniformLocation(compositeProgram, "uFullSize"), fullWidth, fullHeight);
-    glUniform2f(glGetUniformLocation(compositeProgram, "uSimSize"), simWidth, simHeight);
+    glUniform2f(glGetUniformLocation(program, "uFullSize"), fullWidth, fullHeight);
+    glUniform2f(glGetUniformLocation(program, "uSimSize"), simWidth, simHeight);
 
     int workX = (fullWidth + 15) / 16;
     int workY = (fullHeight + 15) / 16;
