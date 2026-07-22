@@ -1,26 +1,28 @@
-#version 310 es
+#version 450
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
 // === Inputs ===
-uniform highp sampler2D uPaperTexture;   // full resolution paper
-uniform highp sampler2D uInkTexture;     // simulated ink (physics resolution)
+layout(binding = 0) uniform sampler2D uPaperTexture;
+layout(binding = 1) uniform sampler2D uInkTexture;
 
 // === Output ===
-layout(rgba8, binding = 0) uniform highp image2D uOutput;
+layout(rgba8, binding = 2, writeonly) uniform image2D uOutput;
 
-uniform highp vec2  uFullSize;
-uniform highp vec2  uSimSize;
+// === Push Constants ===
+layout(push_constant) uniform PushConstants {
+    vec2 uFullSize;
+    vec2 uSimSize;
+} pc;
 
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    if (pos.x >= int(uFullSize.x) || pos.y >= int(uFullSize.y))
+    if (pos.x >= int(pc.uFullSize.x) || pos.y >= int(pc.uFullSize.y))
         return;
 
-    vec2 uv = (vec2(pos) + 0.5) / uFullSize;
-    vec2 simUV = uv; // map to simulation resolution
+    vec2 uv = (vec2(pos) + 0.5) / pc.uFullSize;
+    vec2 simUV = uv;
 
-    // Sample ink at simulation resolution (bilinear filtering)
     vec4 ink = texture(uInkTexture, simUV);
     vec4 paper = texture(uPaperTexture, uv);
 
