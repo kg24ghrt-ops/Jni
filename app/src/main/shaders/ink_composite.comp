@@ -1,29 +1,22 @@
-#version 450
+#version 310 es
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// === Inputs ===
-layout(binding = 0) uniform sampler2D uPaperTexture;
-layout(binding = 1) uniform sampler2D uInkTexture;
+uniform highp sampler2D uPaperTexture;
+uniform highp sampler2D uInkTexture;
 
-// === Output ===
-layout(rgba8, binding = 2, writeonly) uniform image2D uOutput;
+layout(rgba8, binding = 0) writeonly uniform highp image2D uOutput;
 
-// === Push Constants ===
-layout(push_constant) uniform PushConstants {
-    vec2 uFullSize;
-    vec2 uSimSize;
-} pc;
+uniform highp vec2 uFullSize;
+uniform highp vec2 uSimSize;
 
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    if (pos.x >= int(pc.uFullSize.x) || pos.y >= int(pc.uFullSize.y))
+    if (pos.x >= int(uFullSize.x) || pos.y >= int(uFullSize.y))
         return;
 
-    vec2 uv = (vec2(pos) + 0.5) / pc.uFullSize;
-    vec2 simUV = uv;
-
-    vec4 ink = texture(uInkTexture, simUV);
+    vec2 uv = (vec2(pos) + 0.5) / uFullSize;
+    vec4 ink = texture(uInkTexture, uv);
     vec4 paper = texture(uPaperTexture, uv);
 
     float alpha = ink.a;

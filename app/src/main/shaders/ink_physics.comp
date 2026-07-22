@@ -1,50 +1,45 @@
-#version 450
+#version 310 es
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// === Inputs ===
-layout(binding = 0) uniform sampler2D uStampTexture;
-layout(binding = 1) uniform sampler2D uCapillaryMap;
+uniform highp sampler2D uStampTexture;
+uniform highp sampler2D uCapillaryMap;
 
-// === Ink State (ping‑pong) ===
-layout(rgba8, binding = 2, readonly)  uniform image2D uInkInput;
-layout(rgba8, binding = 3, writeonly) uniform image2D uInkOutput;
+layout(rgba8, binding = 0) readonly uniform highp image2D uInkInput;
+layout(rgba8, binding = 1) writeonly uniform highp image2D uInkOutput;
 
-// === Push Constants ===
-layout(push_constant) uniform PushConstants {
-    vec4  uDirtyRect;          // x, y, width, height
-    vec2  uSimSize;
-    vec2  uFullSize;
-    vec2  uStampSize;
-    vec2  uStampOffset;
-    float uDiffusionRate;
-    float uCapillaryStrength;
-    float uAbsorption;
-    float uEvaporation;
-    float uTimeStep;
-} pc;
+uniform highp vec4  uDirtyRect;
+uniform highp vec2  uSimSize;
+uniform highp vec2  uFullSize;
+uniform highp vec2  uStampSize;
+uniform highp vec2  uStampOffset;
+uniform highp float uDiffusionRate;
+uniform highp float uCapillaryStrength;
+uniform highp float uAbsorption;
+uniform highp float uEvaporation;
+uniform highp float uTimeStep;
 
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    if (pos.x >= int(pc.uSimSize.x) || pos.y >= int(pc.uSimSize.y))
+    if (pos.x >= int(uSimSize.x) || pos.y >= int(uSimSize.y))
         return;
 
-    // Check dirty rectangle
-    if (pos.x < int(pc.uDirtyRect.x) || pos.x >= int(pc.uDirtyRect.x + pc.uDirtyRect.z) ||
-        pos.y < int(pc.uDirtyRect.y) || pos.y >= int(pc.uDirtyRect.y + pc.uDirtyRect.w)) {
+    // Skip if outside dirty rectangle
+    if (pos.x < int(uDirtyRect.x) || pos.x >= int(uDirtyRect.x + uDirtyRect.z) ||
+        pos.y < int(uDirtyRect.y) || pos.y >= int(uDirtyRect.y + uDirtyRect.w)) {
         vec4 ink = imageLoad(uInkInput, pos);
         imageStore(uInkOutput, pos, ink);
         return;
     }
 
-    vec2 uv = (vec2(pos) + 0.5) / pc.uSimSize;
-    vec2 offset = 1.0 / pc.uSimSize;
+    vec2 uv = (vec2(pos) + 0.5) / uSimSize;
+    vec2 offset = 1.0 / uSimSize;
 
     // 1. Load current ink
     vec4 ink = imageLoad(uInkInput, pos);
 
     // 2. Add stamp
-    vec2 stampUV = (vec2(pos) * (pc.uFullSize / pc.uSimSize) - pc.uStampOffset) / pc.uStampSize;
+    vec2 stampUV = (vec2(pos) * (uFullSize / uSimSize) - uStampOffset) / uStampSize;
     if (stampUV.x >= 0.0 && stampUV.x < 1.0 &&
         stampUV.y >= 0.0 && stampUV.y < 1.0) {
         vec4 stamp = texture(uStampTexture, stampUV);
@@ -53,7 +48,7 @@ void main() {
         ink.a = min(1.0, ink.a + stampAlpha * 0.85);
     }
 
-    // 3. Fluid diffusion
+    // 3. Fluid diffusion (anisotropic)
     vec4 center = ink;
     vec4 north = imageLoad(uInkInput, pos + ivec2(0, -1));
     vec4 south = imageLoad(uInkInput, pos + ivec2(0, 1));
@@ -62,20 +57,20 @@ void main() {
 
     vec2 capillary = texture(uCapillaryMap, uv).rg;
 
-    float wN = 0.25 + pc.uCapillaryStrength * capillary.y;
-    float wS = 0.25 - pc.uCapillaryStrength * capillary.y;
-    float wE = 0.25 + pc.uCapillaryStrength * capillary.x;
-    float wW = 0.25 - pc.uCapillaryStrength * capillary.x;
+    float wN = 0.25 + uCapillaryStrength * capillary.y;
+    float wS = 0.25 - uCapillaryStrength * capillary.y;
+    float wE = 0.25 + uCapillaryStrength * capillary.x;
+    float wW = 0.25 - uCapillaryStrength * capillary.x;
     float total = 1.0 + wN + wS + wE + wW;
 
     vec4 diffused = (center + wN * north + wS * south + wE * east + wW * west) / total;
-    ink = mix(ink, diffused, pc.uDiffusionRate * pc.uTimeStep);
+    ink = mix(ink, diffused, uDiffusionRate * uTimeStep);
 
     // 4. Absorption
-    ink.a *= (1.0 - pc.uAbsorption * pc.uTimeStep);
+    ink.a *= (1.0 - uAbsorption * uTimeStep);
 
     // 5. Evaporation
-    ink.a *= (1.0 - pc.uEvaporation * pc.uTimeStep);
+    ink.a *= (1.0 - uEvaporation * uTimeStep);
 
     // 6. Clamp
     ink.a = clamp(ink.a, 0.0, 1.0);
