@@ -1,11 +1,15 @@
-#version 310 es
+#version 450
 
 layout(local_size_x = 16, local_size_y = 16) in;
-layout(rg32f, binding = 0) writeonly uniform highp image2D uCapillaryMap;
 
-uniform highp vec2  uMapSize;
-uniform highp uint  uSeed;
+layout(rg32f, binding = 0, writeonly) uniform image2D uCapillaryMap;
 
+layout(push_constant) uniform PushConstants {
+    vec2  uMapSize;
+    uint  uSeed;
+} pc;
+
+// ---- Noise ----
 uint hash(uint x, uint y, uint seed) {
     uint n = x ^ (y * 0x9e3779b9u) ^ seed;
     n = n ^ (n << 13);
@@ -38,10 +42,10 @@ float valueNoise(vec2 p, uint seed) {
 
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    if (pos.x >= int(uMapSize.x) || pos.y >= int(uMapSize.y)) return;
+    if (pos.x >= int(pc.uMapSize.x) || pos.y >= int(pc.uMapSize.y)) return;
 
-    vec2 uv = (vec2(pos) + 0.5) / uMapSize;
-    float angle = valueNoise(uv * 12.0, uSeed) * 6.2831853;
+    vec2 uv = (vec2(pos) + 0.5) / pc.uMapSize;
+    float angle = valueNoise(uv * 12.0, pc.uSeed) * 6.2831853;
     vec2 dir = vec2(cos(angle), sin(angle));
     imageStore(uCapillaryMap, pos, vec4(dir, 0.0, 0.0));
 }

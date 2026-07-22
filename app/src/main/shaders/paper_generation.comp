@@ -1,36 +1,31 @@
-#version 310 es
+#version 450
 
-// Workgroup size – each group processes 16x16 pixels
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// Output image – RGBA8
-layout(rgba8, binding = 0) uniform highp writeonly image2D outputImage;
+layout(rgba8, binding = 0, writeonly) uniform image2D outputImage;
 
-// Uniforms – tunable parameters
-layout(std140, binding = 1) uniform Params {
-    highp vec2  imageSize;
-    highp float lineSpacing;
-    highp float marginLeft;
-    highp float lineThickness;
-    highp uint  seed;
-    highp vec3  lineColor;
-    highp vec3  marginColor;
-    highp vec3  baseColor;
+layout(push_constant) uniform PushConstants {
+    vec2  uImageSize;
+    float uLineSpacing;
+    float uMarginLeft;
+    float uLineThickness;
+    uint  uSeed;
+    vec3  uLineColor;
+    vec3  uMarginColor;
+    vec3  uBaseColor;
 
-    // Tunable parameters
-    highp float fiberScale;      // 0.2
-    highp float grainStrength;   // 0.3
-    highp float bleedAmount;     // 0.25
-    highp float waveAmplitude;   // 0.8
-    highp float inclineSlope;    // 0.002
-    highp float spotThreshold;   // 0.97
-    highp float vignetteStrength; // 0.3
-    highp float paperAge;         // 0.5
-    highp float lineWarp;         // 0.3
-};
+    float uFiberScale;
+    float uGrainStrength;
+    float uBleedAmount;
+    float uWaveAmplitude;
+    float uInclineSlope;
+    float uSpotThreshold;
+    float uVignetteStrength;
+    float uPaperAge;
+    float uLineWarp;
+} pc;
 
-// ---------- CORE NOISE ----------
-
+// ---- Core noise ----
 uint hash(uint x, uint y, uint seed) {
     uint n = x ^ (y * 0x9e3779b9u) ^ seed;
     n = n ^ (n << 13);
@@ -39,53 +34,46 @@ uint hash(uint x, uint y, uint seed) {
     return n;
 }
 
-mediump float randHash(uint x, uint y, uint seed) {
+float randHash(uint x, uint y, uint seed) {
     return float(hash(x, y, seed)) / 4294967296.0;
 }
 
-mediump float valueNoise(highp float x, highp float y, uint seed) {
+float valueNoise(float x, float y, uint seed) {
     uint ix = uint(floor(x));
     uint iy = uint(floor(y));
-    mediump float fx = x - float(ix);
-    mediump float fy = y - float(iy);
-    mediump float sx = fx * fx * (3.0 - 2.0 * fx);
-    mediump float sy = fy * fy * (3.0 - 2.0 * fy);
+    float fx = x - float(ix);
+    float fy = y - float(iy);
+    float sx = fx * fx * (3.0 - 2.0 * fx);
+    float sy = fy * fy * (3.0 - 2.0 * fy);
 
-    mediump float n00 = randHash(ix,     iy,     seed);
-    mediump float n10 = randHash(ix + 1u, iy,     seed);
-    mediump float n01 = randHash(ix,     iy + 1u, seed);
-    mediump float n11 = randHash(ix + 1u, iy + 1u, seed);
+    float n00 = randHash(ix,     iy,     seed);
+    float n10 = randHash(ix + 1u, iy,     seed);
+    float n01 = randHash(ix,     iy + 1u, seed);
+    float n11 = randHash(ix + 1u, iy + 1u, seed);
 
-    mediump float nx0 = mix(n00, n10, sx);
-    mediump float nx1 = mix(n01, n11, sx);
+    float nx0 = mix(n00, n10, sx);
+    float nx1 = mix(n01, n11, sx);
     return mix(nx0, nx1, sy);
 }
 
-// ---------- NOISE CACHE ----------
-
 struct NoiseCache {
-    mediump float base;
-    mediump float detail;
-    mediump float warm;
-    mediump float wave;
-    mediump float imperfection;
-    mediump float warp;    // large-scale paper warp
-    mediump float aging;   // paper yellowing pattern
+    float base;
+    float detail;
+    float warm;
+    float wave;
+    float imperfection;
+    float warp;
+    float aging;
 };
 
-NoiseCache generateNoiseCache(highp float x, highp float y, uint seed) {
+NoiseCache generateNoiseCache(float x, float y, uint seed) {
     NoiseCache n;
-
-    // Large-scale paper warp (for lines)
     n.warp = valueNoise(x * 0.005, y * 0.005, seed + 800u);
-
-    // Aging pattern (large-scale warm patches)
     n.aging = valueNoise(x * 0.02, y * 0.02, seed + 900u);
 
-    // Standard grain
-    mediump float grain = 0.0;
-    mediump float amp = 0.5;
-    mediump float freq = 0.008;
+    float grain = 0.0;
+    float amp = 0.5;
+    float freq = 0.008;
     for (uint i = 0u; i < 4u; i++) {
         grain += amp * valueNoise(x * freq, y * freq, seed + i * 131u);
         amp *= 0.6;
@@ -97,16 +85,12 @@ NoiseCache generateNoiseCache(highp float x, highp float y, uint seed) {
     n.warm = valueNoise(x * 0.03, y * 0.03, seed + 700u);
     n.wave = valueNoise(x * 0.01, float(seed) * 0.1, seed + 1000u);
     n.imperfection = valueNoise(x * 0.6, y * 0.6, seed + 7000u);
-
     return n;
 }
 
-// ---------- VORONOI ----------
-
-mediump float voronoi(highp float x, highp float y, uint seed) {
-    highp vec2 p = vec2(floor(x), floor(y));
-    mediump float minDistSq = 1.0;
-
+float voronoi(float x, float y, uint seed) {
+    vec2 p = vec2(floor(x), floor(y));
+    float minDistSq = 1.0;
     for (int dy = -1; dy <= 1; dy += 2) {
         for (int dx = -1; dx <= 1; dx += 2) {
             vec2 cell = p + vec2(dx, dy);
@@ -126,145 +110,101 @@ mediump float voronoi(highp float x, highp float y, uint seed) {
     return sqrt(minDistSq);
 }
 
-// ---------- PAPER TEXTURE ----------
-
-mediump float paperTexture(highp float x, highp float y, uint seed, NoiseCache n) {
-    mediump float v = voronoi(x * fiberScale, y * fiberScale, seed + 500u);
-    return mix(n.base, v, grainStrength);
+float paperTexture(float x, float y, uint seed, NoiseCache n) {
+    float v = voronoi(x * pc.uFiberScale, y * pc.uFiberScale, seed + 500u);
+    return mix(n.base, v, pc.uGrainStrength);
 }
 
-// ---------- INK BLEED ----------
-
-mediump float inkBleed(highp float d, uint seed) {
-    mediump float n = valueNoise(d * 8.0, float(seed & 0xFFFFu), seed);
+float inkBleed(float d, uint seed) {
+    float n = valueNoise(d * 8.0, float(seed & 0xFFFFu), seed);
     return clamp(0.4 + 0.6 * n, 0.0, 1.0);
 }
 
-// ---------- MAIN SHADER ----------
-
 void main() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    if (pos.x >= int(imageSize.x) || pos.y >= int(imageSize.y))
+    if (pos.x >= int(pc.uImageSize.x) || pos.y >= int(pc.uImageSize.y))
         return;
 
-    highp float fx = float(pos.x);
-    highp float fy = float(pos.y);
-    highp float cx = fx / imageSize.x;
-    highp float cy = fy / imageSize.y;
+    float fx = float(pos.x);
+    float fy = float(pos.y);
+    float cx = fx / pc.uImageSize.x;
+    float cy = fy / pc.uImageSize.y;
 
-    NoiseCache n = generateNoiseCache(fx, fy, seed);
+    NoiseCache n = generateNoiseCache(fx, fy, pc.uSeed);
 
-    // ---------- PAPER COLOR WITH AGING ----------
-    // Warmer base color (creamy paper)
     vec3 warmBase = vec3(0.95, 0.93, 0.89);
-
-    // Patchy aging: large-scale warm/cool variations
-    float aging = n.aging * paperAge;
+    float aging = n.aging * pc.uPaperAge;
     vec3 agedColor = warmBase + vec3(aging * 0.04, aging * 0.02, -aging * 0.03);
     agedColor = clamp(agedColor, 0.82, 0.98);
 
-    // Apply grain
-    mediump float grain = paperTexture(fx, fy, seed, n);
-    mediump float brightness = 0.94 + grain * 0.08;
+    float grain = paperTexture(fx, fy, pc.uSeed, n);
+    float brightness = 0.94 + grain * 0.08;
     brightness = clamp(brightness, 0.86, 1.0);
     vec3 paperColor = agedColor * brightness;
 
-    // ---------- VIGNETTE & LIGHTING FALLOFF ----------
-    // Distance from center
     vec2 centerVec = vec2(cx - 0.5, cy - 0.5);
     float distFromCenter = length(centerVec);
-    float vignette = 1.0 - (distFromCenter * distFromCenter * vignetteStrength);
-
-    // Add organic noise to vignette (corners have irregular shadows)
-    float vignetteNoise = valueNoise(fx * 0.01, fy * 0.01, seed + 10000u) * 0.1;
+    float vignette = 1.0 - (distFromCenter * distFromCenter * pc.uVignetteStrength);
+    float vignetteNoise = valueNoise(fx * 0.01, fy * 0.01, pc.uSeed + 10000u) * 0.1;
     vignette = clamp(vignette + vignetteNoise, 0.65, 1.0);
-
-    // Edge falloff (darker near edges)
     float edgeFalloff = 1.0 - pow(distFromCenter * 1.2, 2.0) * 0.15;
     edgeFalloff = clamp(edgeFalloff, 0.7, 1.0);
-
     paperColor *= (vignette * edgeFalloff);
 
-    // ---------- LINE SPACING WITH WARP (Paper Stretch) ----------
-    mediump float halfThick = lineThickness * 0.5;
-    mediump float lineFalloff = 1.5;
+    float halfThick = pc.uLineThickness * 0.5;
+    float lineFalloff = 1.5;
 
-    // Paper warp: large-scale stretching
-    float warpX = n.warp * lineWarp * 5.0;
-    float warpY = valueNoise(fx * 0.008 + 50.0, fy * 0.008 + 50.0, seed + 1100u) * lineWarp * 3.0;
+    float warpX = n.warp * pc.uLineWarp * 5.0;
+    float warpY = valueNoise(fx * 0.008 + 50.0, fy * 0.008 + 50.0, pc.uSeed + 1100u) * pc.uLineWarp * 3.0;
+    float waveX = sin(fx * 0.005 + float(pc.uSeed) * 0.1) * pc.uWaveAmplitude;
+    float yOffset = waveX + (n.wave * 1.2 - 0.6) + warpY;
+    float incline = pc.uInclineSlope * fx;
+    float effectiveY = fy + yOffset + incline + warpX;
 
-    // Organic line displacement
-    mediump float waveX = sin(fx * 0.005 + float(seed) * 0.1) * waveAmplitude;
-    mediump float yOffset = waveX + (n.wave * 1.2 - 0.6) + warpY;
-    mediump float incline = inclineSlope * fx;
-
-    // Apply warp to effective Y
-    highp float effectiveY = fy + yOffset + incline + warpX;
-
-    // ---------- LINE DETECTION ----------
-    mediump float lineDist = 9999.0;
+    float lineDist = 9999.0;
     bool isLine = false;
-    if (lineSpacing > 0.0) {
-        mediump float rem = mod(effectiveY, lineSpacing);
-        mediump float distToLine = min(rem, lineSpacing - rem);
+    if (pc.uLineSpacing > 0.0) {
+        float rem = mod(effectiveY, pc.uLineSpacing);
+        float distToLine = min(rem, pc.uLineSpacing - rem);
         lineDist = distToLine;
-        if (distToLine < halfThick + lineFalloff) {
-            isLine = true;
-        }
+        if (distToLine < halfThick + lineFalloff) isLine = true;
     }
 
-    // ---------- MARGIN WITH ROUGH EDGE ----------
-    // Add high-frequency jitter to margin (microscopic waviness)
     float marginJitter = (n.detail - 0.5) * 1.5;
-    float marginWave = sin(fy * 0.003 + float(seed) * 0.05) * 0.5;
+    float marginWave = sin(fy * 0.003 + float(pc.uSeed) * 0.05) * 0.5;
+    float roughEdge = valueNoise(fy * 0.1, float(pc.uSeed) * 0.1, pc.uSeed + 1200u) * 0.8;
+    float effectiveMarginX = pc.uMarginLeft + marginWave + marginJitter + roughEdge;
+    float marginDist = abs(fx - effectiveMarginX);
+    bool isMargin = (pc.uMarginLeft > 0.0) && (marginDist < halfThick + lineFalloff);
 
-    // Rough margin edge with ink bleed variation
-    float roughEdge = valueNoise(fy * 0.1, float(seed) * 0.1, seed + 1200u) * 0.8;
-    highp float effectiveMarginX = marginLeft + marginWave + marginJitter + roughEdge;
-
-    mediump float marginDist = abs(fx - effectiveMarginX);
-    bool isMargin = (marginLeft > 0.0) && (marginDist < halfThick + lineFalloff);
-
-    // ---------- RENDER ----------
     vec3 finalColor = paperColor;
 
     if (isMargin) {
-        mediump float d = marginDist - halfThick;
-        mediump float alpha = 1.0 - smoothstep(0.0, lineFalloff, max(0.0, d));
-        mediump float bleed = inkBleed(d, seed + 2000u);
-        // More bleed for rough edge
+        float d = marginDist - halfThick;
+        float alpha = 1.0 - smoothstep(0.0, lineFalloff, max(0.0, d));
+        float bleed = inkBleed(d, pc.uSeed + 2000u);
         bleed = clamp(bleed * 1.2, 0.0, 1.0);
-        mediump float spread = n.warm;
-        alpha = clamp(alpha * (0.75 + bleedAmount * bleed) + (spread - 0.5) * 0.08, 0.0, 1.0);
-
-        // Slight color variation in margin ink (like real printing)
-        vec3 marginInk = marginColor;
-        float inkVar = (n.detail - 0.5) * 0.05;
-        marginInk += inkVar;
+        float spread = n.warm;
+        alpha = clamp(alpha * (0.75 + pc.uBleedAmount * bleed) + (spread - 0.5) * 0.08, 0.0, 1.0);
+        vec3 marginInk = pc.uMarginColor + (n.detail - 0.5) * 0.05;
         marginInk = clamp(marginInk, 0.0, 1.0);
-
         finalColor = mix(paperColor, marginInk, alpha);
     } else if (isLine) {
-        mediump float d = lineDist - halfThick;
-        mediump float alpha = 1.0 - smoothstep(0.0, lineFalloff, max(0.0, d));
-        mediump float bleed = inkBleed(d, seed + 4000u);
-        mediump float density = n.wave;
+        float d = lineDist - halfThick;
+        float alpha = 1.0 - smoothstep(0.0, lineFalloff, max(0.0, d));
+        float bleed = inkBleed(d, pc.uSeed + 4000u);
+        float density = n.wave;
         alpha = clamp(alpha * (0.85 + 0.15 * density) * (0.75 + 0.25 * bleed), 0.0, 1.0);
-
-        mediump float var = n.warm - 0.5;
-        vec3 inkColor = lineColor + var * 0.04;
+        float var = n.warm - 0.5;
+        vec3 inkColor = pc.uLineColor + var * 0.04;
         inkColor = clamp(inkColor, 0.0, 1.0);
-
         finalColor = mix(paperColor, inkColor, alpha);
     }
 
-    // ---------- PAPER IMPERFECTIONS ----------
-    mediump float spotEffect = smoothstep(spotThreshold, 1.0, n.imperfection);
+    float spotEffect = smoothstep(pc.uSpotThreshold, 1.0, n.imperfection);
     finalColor *= (1.0 - spotEffect * 0.06);
-
-    mediump float lightEffect = smoothstep(0.96, 1.0, n.detail);
+    float lightEffect = smoothstep(0.96, 1.0, n.detail);
     finalColor *= (1.0 + lightEffect * 0.04);
 
-    // ---------- OUTPUT ----------
     imageStore(outputImage, pos, vec4(clamp(finalColor, 0.0, 1.0), 1.0));
 }
