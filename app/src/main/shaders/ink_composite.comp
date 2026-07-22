@@ -1,0 +1,31 @@
+#version 310 es
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// === Inputs ===
+uniform highp sampler2D uPaperTexture;   // full resolution paper
+uniform highp sampler2D uInkTexture;     // simulated ink (physics resolution)
+
+// === Output ===
+layout(rgba8, binding = 0) uniform highp image2D uOutput;
+
+uniform highp vec2  uFullSize;
+uniform highp vec2  uSimSize;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= int(uFullSize.x) || pos.y >= int(uFullSize.y))
+        return;
+
+    vec2 uv = (vec2(pos) + 0.5) / uFullSize;
+    vec2 simUV = uv; // map to simulation resolution
+
+    // Sample ink at simulation resolution (bilinear filtering)
+    vec4 ink = texture(uInkTexture, simUV);
+    vec4 paper = texture(uPaperTexture, uv);
+
+    float alpha = ink.a;
+    vec3 finalColor = mix(paper.rgb, ink.rgb, alpha);
+
+    imageStore(uOutput, pos, vec4(finalColor, 1.0));
+}

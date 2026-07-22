@@ -1,0 +1,51 @@
+#version 310 es
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(rg32f, binding = 0) uniform highp image2D uCapillaryMap; // RG = direction vector
+
+uniform highp vec2  uMapSize;
+uniform highp uint  uSeed;
+
+// ---- Noise (same as before) ----
+uint hash(uint x, uint y, uint seed) {
+    uint n = x ^ (y * 0x9e3779b9u) ^ seed;
+    n = n ^ (n << 13);
+    n = n ^ (n >> 17);
+    n = n ^ (n << 5);
+    return n;
+}
+
+float randHash(uint x, uint y, uint seed) {
+    return float(hash(x, y, seed)) / 4294967296.0;
+}
+
+float valueNoise(vec2 p, uint seed) {
+    uint ix = uint(floor(p.x));
+    uint iy = uint(floor(p.y));
+    float fx = p.x - float(ix);
+    float fy = p.y - float(iy);
+    float sx = fx * fx * (3.0 - 2.0 * fx);
+    float sy = fy * fy * (3.0 - 2.0 * fy);
+
+    float n00 = randHash(ix,     iy,     seed);
+    float n10 = randHash(ix + 1u, iy,     seed);
+    float n01 = randHash(ix,     iy + 1u, seed);
+    float n11 = randHash(ix + 1u, iy + 1u, seed);
+
+    float nx0 = mix(n00, n10, sx);
+    float nx1 = mix(n01, n11, sx);
+    return mix(nx0, nx1, sy);
+}
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= int(uMapSize.x) || pos.y >= int(uMapSize.y))
+        return;
+
+    vec2 uv = (vec2(pos) + 0.5) / uMapSize;
+    float angle = valueNoise(uv * 12.0, uSeed) * 6.2831853;
+    vec2 dir = vec2(cos(angle), sin(angle));
+
+    imageStore(uCapillaryMap, pos, vec4(dir, 0.0, 0.0));
+}

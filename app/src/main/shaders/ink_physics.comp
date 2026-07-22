@@ -1,0 +1,87 @@
+#version 310 es
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// === Inputs ===
+uniform highp sampler2D uStampTexture;   // ink stamp (full resolution)
+uniform highp sampler2D uCapillaryMap;   // pre‑computed capillary directions (physics resolution)
+
+// === Ink State (ping‑pong) ===
+layout(rgba8, binding = 0) uniform highp image2D uInkInput;
+layout(rgba8, binding = 1) uniform highp image2D uInkOutput;
+
+// === Dirty Rectangle ===
+uniform highp vec4  uDirtyRect;          // x, y, width, height (in physics pixels)
+uniform highp vec2  uSimSize;            // physics simulation size (e.g., 540x960)
+uniform highp vec2  uFullSize;           // full resolution (e.g., 1080x1920)
+uniform highp vec2  uStampSize;
+uniform highp vec2  uStampOffset;        // in full‑resolution pixels
+
+// === Physics Parameters ===
+uniform highp float uDiffusionRate;      // 0.0 – 0.2
+uniform highp float uCapillaryStrength;  // 0.0 – 0.5
+uniform highp float uAbsorption;         // 0.0 – 0.1
+uniform highp float uEvaporation;        // 0.0 – 0.01
+uniform highp float uTimeStep;           // 0.01 – 0.1
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= int(uSimSize.x) || pos.y >= int(uSimSize.y))
+        return;
+
+    // Check if we're inside the dirty rectangle
+    if (pos.x < int(uDirtyRect.x) || pos.x >= int(uDirtyRect.x + uDirtyRect.z) ||
+        pos.y < int(uDirtyRect.y) || pos.y >= int(uDirtyRect.y + uDirtyRect.w)) {
+        // Outside dirty region: just copy input to output (no physics)
+        vec4 ink = imageLoad(uInkInput, pos);
+        imageStore(uInkOutput, pos, ink);
+        return;
+    }
+
+    vec2 uv = (vec2(pos) + 0.5) / uSimSize;
+    vec2 offset = 1.0 / uSimSize;
+
+    // 1. Load current ink state
+    vec4 ink = imageLoad(uInkInput, pos);
+
+    // 2. Add stamp (convert from full resolution to simulation resolution)
+    vec2 stampUV = (vec2(pos) * (uFullSize / uSimSize) - uStampOffset) / uStampSize;
+    if (stampUV.x >= 0.0 && stampUV.x < 1.0 &&
+        stampUV.y >= 0.0 && stampUV.y < 1.0) {
+        vec4 stamp = texture(uStampTexture, stampUV);
+        float stampAlpha = stamp.a;
+        ink.rgb = mix(ink.rgb, stamp.rgb, stampAlpha * 0.85);
+        ink.a = min(1.0, ink.a + stampAlpha * 0.85);
+    }
+
+    // 3. Fluid Diffusion (using cached capillary map)
+    vec4 center = ink;
+    vec4 north = imageLoad(uInkInput, pos + ivec2(0, -1));
+    vec4 south = imageLoad(uInkInput, pos + ivec2(0, 1));
+    vec4 east  = imageLoad(uInkInput, pos + ivec2(1, 0));
+    vec4 west  = imageLoad(uInkInput, pos + ivec2(-1, 0));
+
+    // Load capillary direction from cached map
+    vec2 capillary = texture(uCapillaryMap, uv).rg;
+
+    // Anisotropic weights
+    float wN = 0.25 + uCapillaryStrength * capillary.y;
+    float wS = 0.25 - uCapillaryStrength * capillary.y;
+    float wE = 0.25 + uCapillaryStrength * capillary.x;
+    float wW = 0.25 - uCapillaryStrength * capillary.x;
+    float total = 1.0 + wN + wS + wE + wW;
+
+    vec4 diffused = (center + wN * north + wS * south + wE * east + wW * west) / total;
+    ink = mix(ink, diffused, uDiffusionRate * uTimeStep);
+
+    // 4. Absorption
+    ink.a *= (1.0 - uAbsorption * uTimeStep);
+
+    // 5. Evaporation
+    ink.a *= (1.0 - uEvaporation * uTimeStep);
+
+    // 6. Clamp and write
+    ink.a = clamp(ink.a, 0.0, 1.0);
+    ink.rgb = clamp(ink.rgb, 0.0, 1.0);
+    imageStore(uInkOutput, pos, ink);
+}
