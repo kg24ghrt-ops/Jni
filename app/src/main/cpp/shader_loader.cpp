@@ -41,7 +41,7 @@ static VkShaderModule loadShaderModuleFromAsset(const char* assetPath) {
 
     VkShaderModule module = VK_NULL_HANDLE;
     VkResult result = vkCreateShaderModule(g_device, &createInfo, nullptr, &module);
-    
+
     AAsset_close(asset);
 
     if (result != VK_SUCCESS) {
@@ -53,9 +53,18 @@ static VkShaderModule loadShaderModuleFromAsset(const char* assetPath) {
 
 // --------------------------------------------------------------
 // Cached shader modules (load once and reuse)
+// These function names match what native-lib.cpp and ink_engine.cpp call
 // --------------------------------------------------------------
 
-VkShaderModule getCapillaryShaderModule() {
+VkShaderModule getPaperProgram() {
+    static VkShaderModule module = VK_NULL_HANDLE;
+    if (!module) {
+        module = loadShaderModuleFromAsset("shaders/paper_generation.spv");
+    }
+    return module;
+}
+
+VkShaderModule getCapillaryProgram() {
     static VkShaderModule module = VK_NULL_HANDLE;
     if (!module) {
         module = loadShaderModuleFromAsset("shaders/capillary_map.spv");
@@ -63,7 +72,7 @@ VkShaderModule getCapillaryShaderModule() {
     return module;
 }
 
-VkShaderModule getPhysicsShaderModule() {
+VkShaderModule getPhysicsProgram() {
     static VkShaderModule module = VK_NULL_HANDLE;
     if (!module) {
         module = loadShaderModuleFromAsset("shaders/ink_physics.spv");
@@ -71,18 +80,10 @@ VkShaderModule getPhysicsShaderModule() {
     return module;
 }
 
-VkShaderModule getCompositeShaderModule() {
+VkShaderModule getCompositeProgram() {
     static VkShaderModule module = VK_NULL_HANDLE;
     if (!module) {
         module = loadShaderModuleFromAsset("shaders/ink_composite.spv");
-    }
-    return module;
-}
-
-VkShaderModule getPaperShaderModule() {
-    static VkShaderModule module = VK_NULL_HANDLE;
-    if (!module) {
-        module = loadShaderModuleFromAsset("shaders/paper_generation.spv");
     }
     return module;
 }
