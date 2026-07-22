@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
 android {
     namespace = "com.example.homecil"
     compileSdk = 36
@@ -13,6 +14,19 @@ android {
         versionCode = 2
         versionName = "1.0.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // --------------------------------------------------------------
+        // OFFICIAL SHADER COMPILATION BLOCK
+        // --------------------------------------------------------------
+        // Android Studio will compile all .comp files in src/main/shaders/
+        // and place the resulting .spv files in assets/shaders/
+        shaders {
+            // Global glslc arguments (applies to all shaders)
+            glslcArgs += listOf("-c", "-g")
+            // Scoped arguments for specific directories (optional)
+            // glslcScopedArgs("some_folder", "-DSOME_DEFINE=1")
+        }
+
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"

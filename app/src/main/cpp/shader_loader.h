@@ -1,14 +1,12 @@
 #pragma once
 
 #include <GLES3/gl31.h>
+#include <android/asset_manager.h>
 
-// Load a shader from embedded SPIR‑V (OpenGL ES)
-GLuint loadShaderFromSPIRV(const void* data, size_t size);
+// Call this once from Java with the AssetManager
+void initShaderLoader(AAssetManager* mgr);
 
-// Create compute program from embedded SPIR‑V
-GLuint createComputeProgram(const void* data, size_t size);
-
-// Get cached program for each shader
+// Get cached compute programs (load from assets/shaders/)
 GLuint getCapillaryProgram();
 GLuint getPhysicsProgram();
 GLuint getCompositeProgram();
