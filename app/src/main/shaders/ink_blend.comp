@@ -1,0 +1,38 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Input images as samplers
+layout(binding = 0) uniform sampler2D uPaperTexture;
+layout(binding = 1) uniform sampler2D uStampTexture;
+// Output image (storage)
+layout(rgba8, binding = 2) writeonly uniform image2D uOutput;
+
+layout(push_constant) uniform PushConstants {
+    vec2  uImageSize;      // full width/height
+    ivec2 uStampOffset;    // pixel offset where stamp is placed
+    ivec2 uStampSize;      // width/height of stamp
+} pc;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= int(pc.uImageSize.x) || pos.y >= int(pc.uImageSize.y))
+        return;
+
+    vec2 uv = (vec2(pos) + 0.5) / pc.uImageSize;
+    vec4 paper = texture(uPaperTexture, uv);
+
+    // Check if this pixel is inside the stamp region
+    ivec2 local = pos - pc.uStampOffset;
+    vec4 ink = vec4(0.0);
+    if (local.x >= 0 && local.x < pc.uStampSize.x &&
+        local.y >= 0 && local.y < pc.uStampSize.y) {
+        vec2 stampUV = (vec2(local) + 0.5) / vec2(pc.uStampSize);
+        ink = texture(uStampTexture, stampUV);
+    }
+
+    // Simple over compositing
+    vec4 result = paper * (1.0 - ink.a) + ink * ink.a;
+
+    imageStore(uOutput, pos, result);
+}
