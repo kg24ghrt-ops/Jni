@@ -1,7 +1,5 @@
 #include "vulkan_compute_engine.h"
-#include <android/native_window.h>
 #include <cstring>
-#include <iostream>
 #include <vector>
 
 #define VK_CHECK(result) if ((result) != VK_SUCCESS) { return false; }
@@ -17,7 +15,7 @@ VulkanComputeEngine& VulkanComputeEngine::getInstance() {
 // --------------------------------------------------------------
 // Initialization / Shutdown
 // --------------------------------------------------------------
-bool VulkanComputeEngine::initialize(ANativeWindow* window) {
+bool VulkanComputeEngine::initialize() {
     if (initialized) return true;
 
     if (!createInstance()) return false;
@@ -62,7 +60,7 @@ void VulkanComputeEngine::shutdown() {
 }
 
 // --------------------------------------------------------------
-// Instance Creation
+// Instance Creation (no surface extensions)
 // --------------------------------------------------------------
 bool VulkanComputeEngine::createInstance() {
     VkApplicationInfo appInfo{};
@@ -77,13 +75,9 @@ bool VulkanComputeEngine::createInstance() {
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     createInfo.pApplicationInfo = &appInfo;
 
-    std::vector<const char*> extensions = {
-        VK_KHR_SURFACE_EXTENSION_NAME,
-        VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
-        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME
-    };
-    createInfo.enabledExtensionCount = extensions.size();
-    createInfo.ppEnabledExtensionNames = extensions.data();
+    // No extensions needed for pure compute
+    createInfo.enabledExtensionCount = 0;
+    createInfo.ppEnabledExtensionNames = nullptr;
 
     VK_CHECK(vkCreateInstance(&createInfo, nullptr, &instance));
     return true;
@@ -177,7 +171,7 @@ bool VulkanComputeEngine::createDescriptorPool() {
 // Descriptor Set Layout
 // --------------------------------------------------------------
 bool VulkanComputeEngine::createDescriptorSetLayout() {
-    // We'll use a layout with 4 bindings: 0: storage image, 1: sampler, 2: storage, 3: storage
+    // Bindings: 0=storage, 1=sampler, 2=storage, 3=storage
     VkDescriptorSetLayoutBinding bindings[4];
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;

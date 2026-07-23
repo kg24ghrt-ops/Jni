@@ -16,7 +16,7 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
         JNIEnv *env,
         jobject /* this */,
         jobject bitmap,
-        jobject surface,
+        jobject surface,   // ignored – kept for compatibility
         jint width,
         jint height,
         jint lineSpacing,
@@ -32,16 +32,9 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
     if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) return;
     if (AndroidBitmap_lockPixels(env, bitmap, &pixels) < 0) return;
 
-    // 2. Get Vulkan engine and initialize with the surface
+    // 2. Get Vulkan engine and initialize (no window needed)
     auto& engine = VulkanComputeEngine::getInstance();
-    ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
-    if (!window) {
-        AndroidBitmap_unlockPixels(env, bitmap);
-        return;
-    }
-
-    if (!engine.initialize(window)) {
-        ANativeWindow_release(window);
+    if (!engine.initialize()) {
         AndroidBitmap_unlockPixels(env, bitmap);
         return;
     }
@@ -52,7 +45,6 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
     // 4. Get the paper generation shader module
     VkShaderModule shaderModule = getPaperShaderModule();
     if (!shaderModule) {
-        ANativeWindow_release(window);
         AndroidBitmap_unlockPixels(env, bitmap);
         return;
     }
@@ -61,13 +53,11 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
     VkImage outputImage = engine.createImage(width, height, VK_FORMAT_R8G8B8A8_UNORM,
                                              VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     if (!outputImage) {
-        ANativeWindow_release(window);
         AndroidBitmap_unlockPixels(env, bitmap);
         return;
     }
     if (!engine.allocateImageMemory(outputImage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         engine.destroyImage(outputImage);
-        ANativeWindow_release(window);
         AndroidBitmap_unlockPixels(env, bitmap);
         return;
     }
@@ -75,7 +65,6 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
     VkImageView outputView = engine.createImageView(outputImage, VK_FORMAT_R8G8B8A8_UNORM);
     if (!outputView) {
         engine.destroyImage(outputImage);
-        ANativeWindow_release(window);
         AndroidBitmap_unlockPixels(env, bitmap);
         return;
     }
@@ -85,7 +74,6 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
     if (!descSet) {
         engine.destroyImageView(outputView);
         engine.destroyImage(outputImage);
-        ANativeWindow_release(window);
         AndroidBitmap_unlockPixels(env, bitmap);
         return;
     }
@@ -147,9 +135,9 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
     bool dispatched = engine.dispatchCompute(shaderModule, {descSet}, &pc, sizeof(pc), workX, workY, 1);
     if (!dispatched) {
         // cleanup and return
+        engine.destroyDescriptorSet(descSet);
         engine.destroyImageView(outputView);
         engine.destroyImage(outputImage);
-        ANativeWindow_release(window);
         AndroidBitmap_unlockPixels(env, bitmap);
         return;
     }
@@ -158,13 +146,15 @@ Java_com_example_homecil_PaperRenderer_renderPaper(
     bool copied = engine.copyImageToHost(outputImage, pixels, width, height, VK_FORMAT_R8G8B8A8_UNORM);
     if (!copied) {
         // fallback: leave bitmap as is (or fill with error color)
+        // Optionally fill with red or checkerboard
+        memset(pixels, 0xFF, width * height * 4);
     }
 
     // 10. Cleanup Vulkan resources (per dispatch)
+    engine.destroyDescriptorSet(descSet);
     engine.destroyImageView(outputView);
     engine.destroyImage(outputImage);
 
-    // 11. Release the window and unlock the bitmap
-    ANativeWindow_release(window);
+    // 11. Unlock the bitmap
     AndroidBitmap_unlockPixels(env, bitmap);
 }

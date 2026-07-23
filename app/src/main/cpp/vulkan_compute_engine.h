@@ -1,16 +1,20 @@
 #pragma once
 
 #include <vulkan/vulkan.h>
-#include <android/native_window.h>
-#include <android/asset_manager.h>
 #include <vector>
 #include <unordered_map>
 
+/**
+ * VulkanComputeEngine – pure compute engine (no presentation).
+ * Manages instance, device, queues, memory, images, descriptor sets,
+ * and dispatch for compute shaders.
+ */
 class VulkanComputeEngine {
 public:
     static VulkanComputeEngine& getInstance();
 
-    bool initialize(ANativeWindow* window);
+    // Initialize Vulkan (no window needed)
+    bool initialize();
     void shutdown();
 
     // Getters
@@ -21,7 +25,7 @@ public:
     VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
     VkSampler getDefaultSampler() const { return defaultSampler; }
 
-    // Image creation and management
+    // Image creation / destruction
     VkImage createImage(uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage);
     VkImageView createImageView(VkImage image, VkFormat format);
     bool allocateImageMemory(VkImage image, VkMemoryPropertyFlags properties);
@@ -29,14 +33,14 @@ public:
     void destroyImageView(VkImageView imageView);
     void destroyDescriptorSet(VkDescriptorSet descriptorSet);
 
-    // Upload data to image (staging buffer)
+    // Upload pixel data to image (via staging buffer)
     bool uploadImageData(VkImage image, void* data, uint32_t width, uint32_t height, VkFormat format);
 
     // Descriptor set creation
     VkDescriptorSet createStorageImageDescriptorSet(VkImageView imageView);
     VkDescriptorSet createCombinedImageDescriptorSet(VkImageView imageView, VkSampler sampler = VK_NULL_HANDLE);
 
-    // Dispatch
+    // Dispatch a compute shader
     bool dispatchCompute(
         VkShaderModule shaderModule,
         const std::vector<VkDescriptorSet>& descriptorSets,
@@ -45,13 +49,14 @@ public:
         uint32_t workX, uint32_t workY, uint32_t workZ
     );
 
-    // Copy image to host (readback)
+    // Copy image back to host memory (readback)
     bool copyImageToHost(VkImage image, void* dstData, uint32_t width, uint32_t height, VkFormat format);
 
 private:
     VulkanComputeEngine() = default;
     ~VulkanComputeEngine() = default;
 
+    // Internal helpers
     bool createInstance();
     bool pickPhysicalDevice();
     bool createDevice();
@@ -60,10 +65,11 @@ private:
     bool createDescriptorSetLayout();
     bool createSampler();
 
-    // Single-time command buffer helpers
+    // Single‑time command buffer helpers (for upload/copy)
     VkCommandBuffer beginSingleTimeCommands();
     void endSingleTimeCommands(VkCommandBuffer commandBuffer);
 
+    // Vulkan handles
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
@@ -73,7 +79,7 @@ private:
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkSampler defaultSampler = VK_NULL_HANDLE;
 
-    // Map to track image memory for destruction
+    // Map image -> device memory for automatic cleanup
     std::unordered_map<VkImage, VkDeviceMemory> imageMemoryMap;
 
     uint32_t queueFamilyIndex = 0;
