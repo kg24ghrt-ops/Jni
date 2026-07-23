@@ -10,8 +10,7 @@ void initShaderLoader(AAssetManager* mgr);
 void setVulkanDevice(VkDevice device);
 
 // Get cached shader modules (load from assets/shaders/)
-// These names match what native-lib.cpp and ink_engine.cpp expect
-VkShaderModule getPaperProgram();
-VkShaderModule getCapillaryProgram();
-VkShaderModule getPhysicsProgram();
-VkShaderModule getCompositeProgram();
+VkShaderModule getPaperShaderModule();
+VkShaderModule getCapillaryShaderModule();
+VkShaderModule getPhysicsShaderModule();
+VkShaderModule getCompositeShaderModule();
