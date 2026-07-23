@@ -35,6 +35,11 @@ static VkDescriptorSet capillaryDescSet = VK_NULL_HANDLE;
 static VkDescriptorSet physicsDescSet = VK_NULL_HANDLE;
 static VkDescriptorSet compositeDescSet = VK_NULL_HANDLE;
 
+// Local sampler and descriptor set layouts (not provided by engine)
+static VkSampler defaultSampler = VK_NULL_HANDLE;
+static VkDescriptorSetLayout physicsDescriptorLayout = VK_NULL_HANDLE;
+static VkDescriptorSetLayout compositeDescriptorLayout = VK_NULL_HANDLE;
+
 // Dirty rectangle tracking
 struct DirtyRect {
     int x, y, w, h;
@@ -73,7 +78,6 @@ Java_com_example_homecil_PaperRenderer_simulateInk(
     }
 
     // 2. Engine must be already initialized by native-lib.cpp.
-    //    We only need the device set in shader loader.
     setVulkanDevice(engine.getDevice());
 
     // 3. Store dimensions and create resources if first time or size changed
@@ -88,8 +92,8 @@ Java_com_example_homecil_PaperRenderer_simulateInk(
         return;
     }
 
-    // 4. Upload paper bitmap to Vulkan image (if changed)
-    if (!engine.uploadImageData(paperImage, paperPixels, fullWidth, fullHeight, VK_FORMAT_R8G8B8A8_UNORM)) {
+    // 4. Upload paper bitmap to Vulkan image (no extra format argument)
+    if (!engine.uploadImageData(paperImage, paperPixels, fullWidth, fullHeight)) {
         AndroidBitmap_unlockPixels(env, paperBitmap);
         AndroidBitmap_unlockPixels(env, inkBitmap);
         return;
@@ -113,7 +117,7 @@ Java_com_example_homecil_PaperRenderer_simulateInk(
     // 8. Composite at full resolution
     runComposite();
 
-    // 9. Read back to bitmap
+    // 9. Read back to bitmap (no extra format argument)
     readBackToBitmap(paperPixels);
 
     // 10. Cleanup stamp
@@ -127,85 +131,151 @@ Java_com_example_homecil_PaperRenderer_simulateInk(
 // ---------- Helper Functions ----------
 
 bool ensureResources() {
+    if (paperImage != VK_NULL_HANDLE) return true;  // Already created
+
     // Create paper image (full resolution)
-    if (paperImage == VK_NULL_HANDLE) {
-        paperImage = engine.createImage(fullWidth, fullHeight, VK_FORMAT_R8G8B8A8_UNORM,
-                                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-        if (!paperImage) return false;
-        if (!engine.allocateImageMemory(paperImage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
-        paperView = engine.createImageView(paperImage, VK_FORMAT_R8G8B8A8_UNORM);
-        if (!paperView) return false;
+    paperImage = engine.createImage(fullWidth, fullHeight, VK_FORMAT_R8G8B8A8_UNORM,
+                                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    if (!paperImage) return false;
+    if (!engine.allocateImageMemory(paperImage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
+    paperView = engine.createImageView(paperImage, VK_FORMAT_R8G8B8A8_UNORM);
+    if (!paperView) return false;
 
-        // Create capillary map (simulation resolution, RG32F)
-        capillaryImage = engine.createImage(simWidth, simHeight, VK_FORMAT_R32G32_SFLOAT,
-                                            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-        if (!capillaryImage) return false;
-        if (!engine.allocateImageMemory(capillaryImage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
-        capillaryView = engine.createImageView(capillaryImage, VK_FORMAT_R32G32_SFLOAT);
-        if (!capillaryView) return false;
+    // Create capillary map (simulation resolution, RG32F)
+    capillaryImage = engine.createImage(simWidth, simHeight, VK_FORMAT_R32G32_SFLOAT,
+                                        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    if (!capillaryImage) return false;
+    if (!engine.allocateImageMemory(capillaryImage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
+    capillaryView = engine.createImageView(capillaryImage, VK_FORMAT_R32G32_SFLOAT);
+    if (!capillaryView) return false;
 
-        // Generate capillary map
-        generateCapillaryMap();
+    // Generate capillary map
+    generateCapillaryMap();
 
-        // Create ink textures (simulation resolution, RGBA8) – ping and pong
-        inkImageA = engine.createImage(simWidth, simHeight, VK_FORMAT_R8G8B8A8_UNORM,
-                                       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-        if (!inkImageA) return false;
-        if (!engine.allocateImageMemory(inkImageA, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
-        inkViewA = engine.createImageView(inkImageA, VK_FORMAT_R8G8B8A8_UNORM);
-        if (!inkViewA) return false;
+    // Create ink textures (simulation resolution, RGBA8) – ping and pong
+    inkImageA = engine.createImage(simWidth, simHeight, VK_FORMAT_R8G8B8A8_UNORM,
+                                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    if (!inkImageA) return false;
+    if (!engine.allocateImageMemory(inkImageA, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
+    inkViewA = engine.createImageView(inkImageA, VK_FORMAT_R8G8B8A8_UNORM);
+    if (!inkViewA) return false;
 
-        inkImageB = engine.createImage(simWidth, simHeight, VK_FORMAT_R8G8B8A8_UNORM,
-                                       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-        if (!inkImageB) return false;
-        if (!engine.allocateImageMemory(inkImageB, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
-        inkViewB = engine.createImageView(inkImageB, VK_FORMAT_R8G8B8A8_UNORM);
-        if (!inkViewB) return false;
+    inkImageB = engine.createImage(simWidth, simHeight, VK_FORMAT_R8G8B8A8_UNORM,
+                                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+    if (!inkImageB) return false;
+    if (!engine.allocateImageMemory(inkImageB, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
+    inkViewB = engine.createImageView(inkImageB, VK_FORMAT_R8G8B8A8_UNORM);
+    if (!inkViewB) return false;
 
-        // Clear ink layers to transparent (0,0,0,0)
-        uint32_t* clearData = new uint32_t[simWidth * simHeight];
-        memset(clearData, 0, simWidth * simHeight * sizeof(uint32_t));
-        engine.uploadImageData(inkImageA, clearData, simWidth, simHeight, VK_FORMAT_R8G8B8A8_UNORM);
-        engine.uploadImageData(inkImageB, clearData, simWidth, simHeight, VK_FORMAT_R8G8B8A8_UNORM);
-        delete[] clearData;
+    // Clear ink layers to transparent (0,0,0,0) – no format arg
+    uint32_t* clearData = new uint32_t[simWidth * simHeight];
+    memset(clearData, 0, simWidth * simHeight * sizeof(uint32_t));
+    engine.uploadImageData(inkImageA, clearData, simWidth, simHeight);
+    engine.uploadImageData(inkImageB, clearData, simWidth, simHeight);
+    delete[] clearData;
 
-        // Create output image (full resolution)
-        outputImage = engine.createImage(fullWidth, fullHeight, VK_FORMAT_R8G8B8A8_UNORM,
-                                         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-        if (!outputImage) return false;
-        if (!engine.allocateImageMemory(outputImage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
-        outputView = engine.createImageView(outputImage, VK_FORMAT_R8G8B8A8_UNORM);
-        if (!outputView) return false;
-    }
+    // Create output image (full resolution)
+    outputImage = engine.createImage(fullWidth, fullHeight, VK_FORMAT_R8G8B8A8_UNORM,
+                                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    if (!outputImage) return false;
+    if (!engine.allocateImageMemory(outputImage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
+    outputView = engine.createImageView(outputImage, VK_FORMAT_R8G8B8A8_UNORM);
+    if (!outputView) return false;
+
+    // Create default sampler (linear, repeat)
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    if (vkCreateSampler(engine.getDevice(), &samplerInfo, nullptr, &defaultSampler) != VK_SUCCESS)
+        return false;
+
+    // Create descriptor set layout for physics (4 bindings)
+    // binding 0: combined image sampler (stamp)
+    // binding 1: combined image sampler (capillary)
+    // binding 2: storage image (input ink)
+    // binding 3: storage image (output ink)
+    VkDescriptorSetLayoutBinding physicsBindings[4] = {};
+    physicsBindings[0].binding = 0;
+    physicsBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    physicsBindings[0].descriptorCount = 1;
+    physicsBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    physicsBindings[1].binding = 1;
+    physicsBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    physicsBindings[1].descriptorCount = 1;
+    physicsBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    physicsBindings[2].binding = 2;
+    physicsBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    physicsBindings[2].descriptorCount = 1;
+    physicsBindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    physicsBindings[3].binding = 3;
+    physicsBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    physicsBindings[3].descriptorCount = 1;
+    physicsBindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo physicsLayoutInfo{};
+    physicsLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    physicsLayoutInfo.bindingCount = 4;
+    physicsLayoutInfo.pBindings = physicsBindings;
+    if (vkCreateDescriptorSetLayout(engine.getDevice(), &physicsLayoutInfo, nullptr, &physicsDescriptorLayout) != VK_SUCCESS)
+        return false;
+
+    // Create descriptor set layout for composite (3 bindings)
+    // binding 0: combined image sampler (paper)
+    // binding 1: combined image sampler (ink)
+    // binding 2: storage image (output)
+    VkDescriptorSetLayoutBinding compositeBindings[3] = {};
+    compositeBindings[0].binding = 0;
+    compositeBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    compositeBindings[0].descriptorCount = 1;
+    compositeBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    compositeBindings[1].binding = 1;
+    compositeBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    compositeBindings[1].descriptorCount = 1;
+    compositeBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    compositeBindings[2].binding = 2;
+    compositeBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    compositeBindings[2].descriptorCount = 1;
+    compositeBindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo compositeLayoutInfo{};
+    compositeLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    compositeLayoutInfo.bindingCount = 3;
+    compositeLayoutInfo.pBindings = compositeBindings;
+    if (vkCreateDescriptorSetLayout(engine.getDevice(), &compositeLayoutInfo, nullptr, &compositeDescriptorLayout) != VK_SUCCESS)
+        return false;
 
     return true;
 }
 
 void generateCapillaryMap() {
-    // Get the capillary shader module
     VkShaderModule shaderModule = getCapillaryShaderModule();
     if (!shaderModule) return;
 
-    // Create descriptor set for capillary map (storage image)
     capillaryDescSet = engine.createStorageImageDescriptorSet(capillaryView);
     if (!capillaryDescSet) return;
 
-    // Push constants for capillary generation
     struct CapillaryPush {
         float mapSize[2];
         uint32_t seed;
     } pc;
-    pc.mapSize[0] = simWidth;
-    pc.mapSize[1] = simHeight;
+    pc.mapSize[0] = (float)simWidth;
+    pc.mapSize[1] = (float)simHeight;
     pc.seed = (uint32_t)time(nullptr);
 
-    // Dispatch
     engine.dispatchCompute(shaderModule, {capillaryDescSet}, &pc, sizeof(pc),
                           (simWidth + 15) / 16, (simHeight + 15) / 16, 1);
 }
 
 void updateDirtyRect(int offsetX, int offsetY, int stampW, int stampH) {
-    // Convert to simulation coordinates
     int simX = (int)(offsetX * SIMULATION_SCALE);
     int simY = (int)(offsetY * SIMULATION_SCALE);
     int simW = (int)(stampW * SIMULATION_SCALE) + 4;
@@ -227,7 +297,6 @@ void updateDirtyRect(int offsetX, int offsetY, int stampW, int stampH) {
 }
 
 void runPhysicsSimulation(VkImage stampImage, VkImageView stampView) {
-    // Get physics shader module
     VkShaderModule shaderModule = getPhysicsShaderModule();
     if (!shaderModule) return;
 
@@ -235,32 +304,25 @@ void runPhysicsSimulation(VkImage stampImage, VkImageView stampView) {
     VkImageView inputView = useTextureA ? inkViewA : inkViewB;
     VkImageView outputView = useTextureA ? inkViewB : inkViewA;
 
-    // Create descriptor set for physics:
-    // Binding 0: stamp sampler (combined image sampler)
-    // Binding 1: capillary sampler (combined image sampler)
-    // Binding 2: input ink (storage image, readonly)
-    // Binding 3: output ink (storage image, writeonly)
-    // We'll allocate from the engine's descriptor pool.
+    // Allocate descriptor set using the physics layout
     VkDescriptorSet descSet;
-    VkDescriptorSetAllocateInfo alloc = {};
+    VkDescriptorSetAllocateInfo alloc{};
     alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc.descriptorPool = engine.getDescriptorPool();
     alloc.descriptorSetCount = 1;
-    VkDescriptorSetLayout layout = engine.getDescriptorSetLayout(); // local copy
-    alloc.pSetLayouts = &layout;
+    alloc.pSetLayouts = &physicsDescriptorLayout;
     if (vkAllocateDescriptorSets(engine.getDevice(), &alloc, &descSet) != VK_SUCCESS) {
         return;
     }
 
-    // Prepare writes
     VkDescriptorImageInfo stampInfo{};
     stampInfo.imageView = stampView;
-    stampInfo.sampler = engine.getDefaultSampler();
+    stampInfo.sampler = defaultSampler;
     stampInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorImageInfo capillaryInfo{};
     capillaryInfo.imageView = capillaryView;
-    capillaryInfo.sampler = engine.getDefaultSampler();
+    capillaryInfo.sampler = defaultSampler;
     capillaryInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorImageInfo inputInfo{};
@@ -271,8 +333,7 @@ void runPhysicsSimulation(VkImage stampImage, VkImageView stampView) {
     outputInfo.imageView = outputView;
     outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-    std::vector<VkWriteDescriptorSet> writes(4);
-    // Binding 0: sampler
+    VkWriteDescriptorSet writes[4] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = descSet;
     writes[0].dstBinding = 0;
@@ -301,9 +362,8 @@ void runPhysicsSimulation(VkImage stampImage, VkImageView stampView) {
     writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[3].pImageInfo = &outputInfo;
 
-    vkUpdateDescriptorSets(engine.getDevice(), writes.size(), writes.data(), 0, nullptr);
+    vkUpdateDescriptorSets(engine.getDevice(), 4, writes, 0, nullptr);
 
-    // Push constants for physics
     struct PhysicsPush {
         float dirtyRect[4];
         float simSize[2];
@@ -317,14 +377,14 @@ void runPhysicsSimulation(VkImage stampImage, VkImageView stampView) {
         float timeStep;
         uint32_t iteration;
     } pc;
-    pc.dirtyRect[0] = dirtyRect.x;
-    pc.dirtyRect[1] = dirtyRect.y;
-    pc.dirtyRect[2] = dirtyRect.w;
-    pc.dirtyRect[3] = dirtyRect.h;
-    pc.simSize[0] = simWidth;
-    pc.simSize[1] = simHeight;
-    pc.fullSize[0] = fullWidth;
-    pc.fullSize[1] = fullHeight;
+    pc.dirtyRect[0] = (float)dirtyRect.x;
+    pc.dirtyRect[1] = (float)dirtyRect.y;
+    pc.dirtyRect[2] = (float)dirtyRect.w;
+    pc.dirtyRect[3] = (float)dirtyRect.h;
+    pc.simSize[0] = (float)simWidth;
+    pc.simSize[1] = (float)simHeight;
+    pc.fullSize[0] = (float)fullWidth;
+    pc.fullSize[1] = (float)fullHeight;
     pc.stampSize[0] = (float)(fullWidth * SIMULATION_SCALE);
     pc.stampSize[1] = (float)(fullHeight * SIMULATION_SCALE);
     pc.stampOffset[0] = 0.0f;
@@ -334,59 +394,50 @@ void runPhysicsSimulation(VkImage stampImage, VkImageView stampView) {
     pc.absorption = 0.02f;
     pc.evaporation = 0.001f;
     pc.timeStep = 0.05f;
-    pc.iteration = 0; // first pass
+    pc.iteration = 0;
 
-    // Dispatch
     engine.dispatchCompute(shaderModule, {descSet}, &pc, sizeof(pc),
                           (simWidth + 15) / 16, (simHeight + 15) / 16, 1);
 
-    // Swap for next iteration
     useTextureA = !useTextureA;
 
-    // Clean up previous physics descriptor set if any
     if (physicsDescSet != VK_NULL_HANDLE) {
         vkFreeDescriptorSets(engine.getDevice(), engine.getDescriptorPool(), 1, &physicsDescSet);
     }
-    physicsDescSet = descSet; // store for later reuse
+    physicsDescSet = descSet;
 }
 
 void runComposite() {
     VkShaderModule shaderModule = getCompositeShaderModule();
     if (!shaderModule) return;
 
-    // Choose current ink texture (the one that was just written)
-    VkImageView inkView = useTextureA ? inkViewB : inkViewA; // because we swapped after physics
+    VkImageView inkView = useTextureA ? inkViewB : inkViewA; // after swap
 
-    // Create descriptor set for composite:
-    // binding 0: paper sampler
-    // binding 1: ink sampler
-    // binding 2: output storage image
     VkDescriptorSet descSet;
-    VkDescriptorSetAllocateInfo alloc = {};
+    VkDescriptorSetAllocateInfo alloc{};
     alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc.descriptorPool = engine.getDescriptorPool();
     alloc.descriptorSetCount = 1;
-    VkDescriptorSetLayout layout = engine.getDescriptorSetLayout(); // local copy
-    alloc.pSetLayouts = &layout;
+    alloc.pSetLayouts = &compositeDescriptorLayout;
     if (vkAllocateDescriptorSets(engine.getDevice(), &alloc, &descSet) != VK_SUCCESS) {
         return;
     }
 
     VkDescriptorImageInfo paperInfo{};
     paperInfo.imageView = paperView;
-    paperInfo.sampler = engine.getDefaultSampler();
+    paperInfo.sampler = defaultSampler;
     paperInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorImageInfo inkInfo{};
     inkInfo.imageView = inkView;
-    inkInfo.sampler = engine.getDefaultSampler();
+    inkInfo.sampler = defaultSampler;
     inkInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorImageInfo outputInfo{};
     outputInfo.imageView = outputView;
     outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-    std::vector<VkWriteDescriptorSet> writes(3);
+    VkWriteDescriptorSet writes[3] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = descSet;
     writes[0].dstBinding = 0;
@@ -408,22 +459,20 @@ void runComposite() {
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[2].pImageInfo = &outputInfo;
 
-    vkUpdateDescriptorSets(engine.getDevice(), writes.size(), writes.data(), 0, nullptr);
+    vkUpdateDescriptorSets(engine.getDevice(), 3, writes, 0, nullptr);
 
-    // Push constants for composite
     struct CompositePush {
         float fullSize[2];
         float simSize[2];
     } pc;
-    pc.fullSize[0] = fullWidth;
-    pc.fullSize[1] = fullHeight;
-    pc.simSize[0] = simWidth;
-    pc.simSize[1] = simHeight;
+    pc.fullSize[0] = (float)fullWidth;
+    pc.fullSize[1] = (float)fullHeight;
+    pc.simSize[0] = (float)simWidth;
+    pc.simSize[1] = (float)simHeight;
 
     engine.dispatchCompute(shaderModule, {descSet}, &pc, sizeof(pc),
                           (fullWidth + 15) / 16, (fullHeight + 15) / 16, 1);
 
-    // Cache descriptor set
     if (compositeDescSet != VK_NULL_HANDLE) {
         vkFreeDescriptorSets(engine.getDevice(), engine.getDescriptorPool(), 1, &compositeDescSet);
     }
@@ -431,7 +480,7 @@ void runComposite() {
 }
 
 void readBackToBitmap(void* paperPixels) {
-    engine.copyImageToHost(outputImage, paperPixels, fullWidth, fullHeight, VK_FORMAT_R8G8B8A8_UNORM);
+    engine.copyImageToHost(outputImage, paperPixels, fullWidth, fullHeight);
 }
 
 VkImage uploadStampTexture(void* pixels, int width, int height, VkImageView& outView) {
@@ -443,7 +492,7 @@ VkImage uploadStampTexture(void* pixels, int width, int height, VkImageView& out
         return VK_NULL_HANDLE;
     }
 
-    if (!engine.uploadImageData(image, pixels, width, height, VK_FORMAT_R8G8B8A8_UNORM)) {
+    if (!engine.uploadImageData(image, pixels, width, height)) {
         engine.destroyImage(image);
         return VK_NULL_HANDLE;
     }
