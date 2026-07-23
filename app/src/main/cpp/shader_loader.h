@@ -14,3 +14,4 @@ VkShaderModule getPaperShaderModule();
 VkShaderModule getCapillaryShaderModule();
 VkShaderModule getPhysicsShaderModule();
 VkShaderModule getCompositeShaderModule();
+VkShaderModule getInkBlendShaderModule();          // <-- ADD THIS

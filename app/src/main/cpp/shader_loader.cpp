@@ -63,3 +63,9 @@ VkShaderModule getCompositeShaderModule() {
     if (!module) module = loadShaderModuleFromAsset("shaders/ink_composite.spv");
     return module;
 }
+
+VkShaderModule getInkBlendShaderModule() {
+    static VkShaderModule module = VK_NULL_HANDLE;
+    if (!module) module = loadShaderModuleFromAsset("shaders/ink_blend.spv");
+    return module;
+}
