@@ -72,17 +72,11 @@ Java_com_example_homecil_PaperRenderer_simulateInk(
         return;
     }
 
-    // 2. Initialize Vulkan (if not done)
-    if (!engine.initialize()) {
-        AndroidBitmap_unlockPixels(env, paperBitmap);
-        AndroidBitmap_unlockPixels(env, inkBitmap);
-        return;
-    }
-
-    // 3. Set device in shader loader
+    // 2. Engine must be already initialized by native-lib.cpp.
+    //    We only need the device set in shader loader.
     setVulkanDevice(engine.getDevice());
 
-    // 4. Store dimensions and create resources if first time or size changed
+    // 3. Store dimensions and create resources if first time or size changed
     fullWidth = paperInfo.width;
     fullHeight = paperInfo.height;
     simWidth = (int)(fullWidth * SIMULATION_SCALE);
@@ -94,15 +88,14 @@ Java_com_example_homecil_PaperRenderer_simulateInk(
         return;
     }
 
-    // 5. Upload paper bitmap to Vulkan image (if changed)
-    // We'll upload every time for simplicity – could optimize with dirty flag
+    // 4. Upload paper bitmap to Vulkan image (if changed)
     if (!engine.uploadImageData(paperImage, paperPixels, fullWidth, fullHeight, VK_FORMAT_R8G8B8A8_UNORM)) {
         AndroidBitmap_unlockPixels(env, paperBitmap);
         AndroidBitmap_unlockPixels(env, inkBitmap);
         return;
     }
 
-    // 6. Upload stamp bitmap to a temporary image
+    // 5. Upload stamp bitmap to a temporary image
     VkImageView stampView = VK_NULL_HANDLE;
     VkImage stampImage = uploadStampTexture(inkPixels, inkInfo.width, inkInfo.height, stampView);
     if (!stampImage) {
@@ -111,19 +104,19 @@ Java_com_example_homecil_PaperRenderer_simulateInk(
         return;
     }
 
-    // 7. Update dirty rectangle
+    // 6. Update dirty rectangle
     updateDirtyRect(offsetX, offsetY, inkInfo.width, inkInfo.height);
 
-    // 8. Run physics simulation (at lower resolution)
+    // 7. Run physics simulation (at lower resolution)
     runPhysicsSimulation(stampImage, stampView);
 
-    // 9. Composite at full resolution
+    // 8. Composite at full resolution
     runComposite();
 
-    // 10. Read back to bitmap
+    // 9. Read back to bitmap
     readBackToBitmap(paperPixels);
 
-    // 11. Cleanup stamp
+    // 10. Cleanup stamp
     engine.destroyImage(stampImage);
     engine.destroyImageView(stampView);
 
@@ -247,29 +240,14 @@ void runPhysicsSimulation(VkImage stampImage, VkImageView stampView) {
     // Binding 1: capillary sampler (combined image sampler)
     // Binding 2: input ink (storage image, readonly)
     // Binding 3: output ink (storage image, writeonly)
-    // We'll create a single descriptor set with all bindings.
-    // We need to allocate a descriptor set from the pool.
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = engine.getDescriptorPool(); // need to expose this
-    // Actually, we need to expose descriptor pool from engine. We'll add a getter.
-    // For now, we'll assume the engine provides a method to create a descriptor set with custom bindings.
-    // Since the engine's layout has bindings 0-3, we can create a set and update all.
-    // We'll use the engine's helper to create a combined image sampler descriptor set for bindings 0 and 1,
-    // but we need a single set with both storage and sampler. The engine's current helpers create separate sets.
-    // Simpler: we'll create a descriptor set manually.
-    // We'll modify the engine to expose a method to create a descriptor set with multiple writes.
-    // For brevity, I'll assume we have a helper in the engine: createDescriptorSet.
-    // I'll add that in the engine implementation.
-
-    // For now, we'll create the descriptor set each time (caching is better, but we'll keep it simple).
-    // We'll use the engine's descriptor pool and layout.
+    // We'll allocate from the engine's descriptor pool.
     VkDescriptorSet descSet;
     VkDescriptorSetAllocateInfo alloc = {};
     alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc.descriptorPool = engine.getDescriptorPool();
     alloc.descriptorSetCount = 1;
-    alloc.pSetLayouts = &engine.getDescriptorSetLayout();
+    VkDescriptorSetLayout layout = engine.getDescriptorSetLayout(); // local copy
+    alloc.pSetLayouts = &layout;
     if (vkAllocateDescriptorSets(engine.getDevice(), &alloc, &descSet) != VK_SUCCESS) {
         return;
     }
@@ -365,11 +343,7 @@ void runPhysicsSimulation(VkImage stampImage, VkImageView stampView) {
     // Swap for next iteration
     useTextureA = !useTextureA;
 
-    // Free descriptor set? We'll reuse next time; we can cache it.
-    // For simplicity, we'll allocate each time; we can improve later.
-    // vkFreeDescriptorSets(engine.getDevice(), engine.getDescriptorPool(), 1, &descSet);
-    // Actually, we need to free to avoid leaks. We'll store it in a static map and reuse.
-    // We'll just assign to physicsDescSet and reuse; we'll free on shutdown.
+    // Clean up previous physics descriptor set if any
     if (physicsDescSet != VK_NULL_HANDLE) {
         vkFreeDescriptorSets(engine.getDevice(), engine.getDescriptorPool(), 1, &physicsDescSet);
     }
@@ -392,7 +366,8 @@ void runComposite() {
     alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc.descriptorPool = engine.getDescriptorPool();
     alloc.descriptorSetCount = 1;
-    alloc.pSetLayouts = &engine.getDescriptorSetLayout();
+    VkDescriptorSetLayout layout = engine.getDescriptorSetLayout(); // local copy
+    alloc.pSetLayouts = &layout;
     if (vkAllocateDescriptorSets(engine.getDevice(), &alloc, &descSet) != VK_SUCCESS) {
         return;
     }
