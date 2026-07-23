@@ -77,7 +77,6 @@ bool VulkanComputeEngine::createInstance() {
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     createInfo.pApplicationInfo = &appInfo;
 
-    // Required extensions for Android
     std::vector<const char*> extensions = {
         VK_KHR_SURFACE_EXTENSION_NAME,
         VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
@@ -102,10 +101,6 @@ bool VulkanComputeEngine::pickPhysicalDevice() {
     vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
 
     for (auto dev : devices) {
-        VkPhysicalDeviceProperties props;
-        vkGetPhysicalDeviceProperties(dev, &props);
-
-        // Check for compute queue
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(dev, &queueFamilyCount, nullptr);
         std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
@@ -133,22 +128,15 @@ bool VulkanComputeEngine::createDevice() {
     queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &queuePriority;
 
-    // Enable required features (none needed for basic compute)
     VkPhysicalDeviceFeatures deviceFeatures{};
-
-    // Enable extension for storage buffer / image readback? We'll use transfer queues.
-    std::vector<const char*> deviceExtensions = {};
 
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     createInfo.pQueueCreateInfos = &queueCreateInfo;
     createInfo.queueCreateInfoCount = 1;
     createInfo.pEnabledFeatures = &deviceFeatures;
-    createInfo.enabledExtensionCount = deviceExtensions.size();
-    createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
     VK_CHECK(vkCreateDevice(physicalDevice, &createInfo, nullptr, &device));
-
     vkGetDeviceQueue(device, queueFamilyIndex, 0, &computeQueue);
     return true;
 }
@@ -170,81 +158,51 @@ bool VulkanComputeEngine::createCommandPool() {
 // Descriptor Pool
 // --------------------------------------------------------------
 bool VulkanComputeEngine::createDescriptorPool() {
-    // We need: storage image (4) + combined image sampler (4)
     std::vector<VkDescriptorPoolSize> poolSizes = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 8},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8}
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 16},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16}
     };
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = poolSizes.size();
     poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = 8; // enough for our use
+    poolInfo.maxSets = 16;
 
     VK_CHECK(vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool));
     return true;
 }
 
 // --------------------------------------------------------------
-// Descriptor Set Layout (matching the shader bindings)
+// Descriptor Set Layout
 // --------------------------------------------------------------
 bool VulkanComputeEngine::createDescriptorSetLayout() {
-    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    // We'll use a layout with 4 bindings: 0: storage image, 1: sampler, 2: storage, 3: storage
+    VkDescriptorSetLayoutBinding bindings[4];
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    // For storage images (binding 0 in shader)
-    VkDescriptorSetLayoutBinding storageBinding{};
-    storageBinding.binding = 0;
-    storageBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    storageBinding.descriptorCount = 1;
-    storageBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings.push_back(storageBinding);
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    // For combined image samplers (binding 1, 2, etc.)
-    VkDescriptorSetLayoutBinding samplerBinding{};
-    samplerBinding.binding = 1;
-    samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    samplerBinding.descriptorCount = 1;
-    samplerBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings.push_back(samplerBinding);
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    // Actually, we need different shaders have different bindings.
-    // But we can reuse the same layout for all: we'll just make it flexible.
-    // For simplicity, we'll create a layout with two bindings: storage image (binding 0) and sampler (binding 1).
-    // If a shader needs more, we can extend later.
-
-    // For paper generation: only storage image (binding 0) – no sampler.
-    // For capillary map: only storage image (binding 0).
-    // For physics: storage images (bindings 2 and 3) and samplers (bindings 0 and 1).
-    // For composite: samplers (bindings 0 and 1) and storage image (binding 2).
-    // So we need a more flexible layout. We'll create a layout with all possible bindings (0-3) for both types.
-
-    VkDescriptorSetLayoutBinding allBindings[4];
-    // Binding 0: storage image
-    allBindings[0].binding = 0;
-    allBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    allBindings[0].descriptorCount = 1;
-    allBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    // Binding 1: combined image sampler
-    allBindings[1].binding = 1;
-    allBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    allBindings[1].descriptorCount = 1;
-    allBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    // Binding 2: storage image (for physics input/output)
-    allBindings[2].binding = 2;
-    allBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    allBindings[2].descriptorCount = 1;
-    allBindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    // Binding 3: storage image (for physics output)
-    allBindings[3].binding = 3;
-    allBindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    allBindings[3].descriptorCount = 1;
-    allBindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layoutInfo.bindingCount = 4;
-    layoutInfo.pBindings = allBindings;
+    layoutInfo.pBindings = bindings;
 
     VK_CHECK(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout));
     return true;
@@ -268,12 +226,44 @@ bool VulkanComputeEngine::createSampler() {
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    samplerInfo.mipLodBias = 0.0f;
-    samplerInfo.minLod = 0.0f;
-    samplerInfo.maxLod = 0.0f;
 
     VK_CHECK(vkCreateSampler(device, &samplerInfo, nullptr, &defaultSampler));
     return true;
+}
+
+// --------------------------------------------------------------
+// Single-Time Command Buffer Helpers
+// --------------------------------------------------------------
+VkCommandBuffer VulkanComputeEngine::beginSingleTimeCommands() {
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = commandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+    return commandBuffer;
+}
+
+void VulkanComputeEngine::endSingleTimeCommands(VkCommandBuffer commandBuffer) {
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(computeQueue);
+
+    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
 
 // --------------------------------------------------------------
@@ -336,15 +326,6 @@ bool VulkanComputeEngine::allocateImageMemory(VkImage image, VkMemoryPropertyFla
             break;
         }
     }
-    if (memoryTypeIndex == 0 && properties != 0) {
-        // fallback: try again without properties
-        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-            if (memRequirements.memoryTypeBits & (1 << i)) {
-                memoryTypeIndex = i;
-                break;
-            }
-        }
-    }
 
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -360,28 +341,119 @@ bool VulkanComputeEngine::allocateImageMemory(VkImage image, VkMemoryPropertyFla
         vkFreeMemory(device, memory, nullptr);
         return false;
     }
-    // Store memory in a map? For simplicity, we'll just assume the caller manages it.
-    // We could store it, but for this engine we'll let the caller handle cleanup.
-    // To avoid leaks, we'll maintain a map of image->memory.
-    // For now, we'll keep a static map.
-    static std::unordered_map<VkImage, VkDeviceMemory> memoryMap;
-    memoryMap[image] = memory;
+    imageMemoryMap[image] = memory;
     return true;
 }
 
 void VulkanComputeEngine::destroyImage(VkImage image) {
-    // Free associated memory if any
-    static std::unordered_map<VkImage, VkDeviceMemory> memoryMap;
-    auto it = memoryMap.find(image);
-    if (it != memoryMap.end()) {
+    auto it = imageMemoryMap.find(image);
+    if (it != imageMemoryMap.end()) {
         vkFreeMemory(device, it->second, nullptr);
-        memoryMap.erase(it);
+        imageMemoryMap.erase(it);
     }
     vkDestroyImage(device, image, nullptr);
 }
 
 void VulkanComputeEngine::destroyImageView(VkImageView imageView) {
     vkDestroyImageView(device, imageView, nullptr);
+}
+
+void VulkanComputeEngine::destroyDescriptorSet(VkDescriptorSet descriptorSet) {
+    vkFreeDescriptorSets(device, descriptorPool, 1, &descriptorSet);
+}
+
+// --------------------------------------------------------------
+// Upload Image Data (staging buffer)
+// --------------------------------------------------------------
+bool VulkanComputeEngine::uploadImageData(VkImage image, void* data, uint32_t width, uint32_t height, VkFormat format) {
+    VkDeviceSize imageSize = width * height * 4; // RGBA8
+
+    // Create staging buffer
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = imageSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer stagingBuffer;
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements memReqs;
+    vkGetBufferMemoryRequirements(device, stagingBuffer, &memReqs);
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReqs.size;
+
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
+    uint32_t memType = 0;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((memReqs.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            memType = i;
+            break;
+        }
+    }
+    VkDeviceMemory stagingMemory;
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return false;
+    }
+    vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
+
+    // Map and copy data
+    void* mapped;
+    vkMapMemory(device, stagingMemory, 0, imageSize, 0, &mapped);
+    memcpy(mapped, data, imageSize);
+    vkUnmapMemory(device, stagingMemory);
+
+    // Use single-time command buffer to copy
+    VkCommandBuffer cmd = beginSingleTimeCommands();
+
+    // Transition image to transfer destination layout
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = queueFamilyIndex;
+    barrier.dstQueueFamilyIndex = queueFamilyIndex;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    // Copy buffer to image
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent.width = width;
+    region.imageExtent.height = height;
+    region.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(cmd, stagingBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // Transition back to shader read only (or general) layout
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    endSingleTimeCommands(cmd);
+
+    // Cleanup staging
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+    return true;
 }
 
 // --------------------------------------------------------------
@@ -406,7 +478,7 @@ VkDescriptorSet VulkanComputeEngine::createStorageImageDescriptorSet(VkImageView
     VkWriteDescriptorSet write{};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     write.dstSet = descriptorSet;
-    write.dstBinding = 0; // binding 0 = storage image
+    write.dstBinding = 0;
     write.dstArrayElement = 0;
     write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     write.descriptorCount = 1;
@@ -436,7 +508,7 @@ VkDescriptorSet VulkanComputeEngine::createCombinedImageDescriptorSet(VkImageVie
     VkWriteDescriptorSet write{};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     write.dstSet = descriptorSet;
-    write.dstBinding = 1; // binding 1 = combined image sampler
+    write.dstBinding = 1;
     write.dstArrayElement = 0;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.descriptorCount = 1;
@@ -444,10 +516,6 @@ VkDescriptorSet VulkanComputeEngine::createCombinedImageDescriptorSet(VkImageVie
 
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     return descriptorSet;
-}
-
-VkSampler VulkanComputeEngine::createSampler() {
-    return defaultSampler; // already created
 }
 
 // --------------------------------------------------------------
@@ -462,7 +530,6 @@ bool VulkanComputeEngine::dispatchCompute(
 
     if (!device || !commandPool || !shaderModule) return false;
 
-    // Create pipeline layout
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pushRange.offset = 0;
@@ -480,7 +547,6 @@ bool VulkanComputeEngine::dispatchCompute(
         return false;
     }
 
-    // Create compute pipeline
     VkComputePipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -495,12 +561,154 @@ bool VulkanComputeEngine::dispatchCompute(
         return false;
     }
 
-    // Allocate command buffer
+    VkCommandBuffer cmd;
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = commandPool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(device, &allocInfo, &cmd) != VK_SUCCESS) {
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        return false;
+    }
 
-    VkCommandBuffer cmd;
-    if (vkAllocateCommandBuffers(device, &allocInfo,
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+
+    if (!descriptorSets.empty()) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                               pipelineLayout, 0, descriptorSets.size(),
+                               descriptorSets.data(), 0, nullptr);
+    }
+
+    if (pushConstants && pushConstantsSize > 0) {
+        vkCmdPushConstants(cmd, pipelineLayout,
+                          VK_SHADER_STAGE_COMPUTE_BIT, 0, pushConstantsSize, pushConstants);
+    }
+
+    vkCmdDispatch(cmd, workX, workY, workZ);
+    vkEndCommandBuffer(cmd);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+
+    VkResult result = vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    if (result != VK_SUCCESS) {
+        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkFreeCommandBuffers(device, commandPool, 1, &cmd);
+        return false;
+    }
+    vkQueueWaitIdle(computeQueue);
+
+    vkDestroyPipeline(device, pipeline, nullptr);
+    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+    vkFreeCommandBuffers(device, commandPool, 1, &cmd);
+
+    return true;
+}
+
+// --------------------------------------------------------------
+// Copy Image to Host (Readback)
+// --------------------------------------------------------------
+bool VulkanComputeEngine::copyImageToHost(VkImage image, void* dstData, uint32_t width, uint32_t height, VkFormat format) {
+    VkDeviceSize imageSize = width * height * 4;
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = imageSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer stagingBuffer;
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements memReqs;
+    vkGetBufferMemoryRequirements(device, stagingBuffer, &memReqs);
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReqs.size;
+
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
+    uint32_t memType = 0;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((memReqs.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            memType = i;
+            break;
+        }
+    }
+    VkDeviceMemory stagingMemory;
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return false;
+    }
+    vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
+
+    VkCommandBuffer cmd = beginSingleTimeCommands();
+
+    // Transition image to transfer source layout
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = queueFamilyIndex;
+    barrier.dstQueueFamilyIndex = queueFamilyIndex;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                        0, nullptr, 0, nullptr, 1, &barrier);
+
+    // Copy image to buffer
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent.width = width;
+    region.imageExtent.height = height;
+    region.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          stagingBuffer, 1, &region);
+
+    // Transition back to general layout
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                        0, nullptr, 0, nullptr, 1, &barrier);
+
+    endSingleTimeCommands(cmd);
+
+    // Map and copy data
+    void* mapped;
+    if (vkMapMemory(device, stagingMemory, 0, imageSize, 0, &mapped) != VK_SUCCESS) {
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingMemory, nullptr);
+        return false;
+    }
+    memcpy(dstData, mapped, imageSize);
+    vkUnmapMemory(device, stagingMemory);
+
+    vkDestroyBuffer(device, stagingBuffer, nullptr);
+    vkFreeMemory(device, stagingMemory, nullptr);
+    return true;
+}
