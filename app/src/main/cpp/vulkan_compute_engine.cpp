@@ -1,8 +1,9 @@
 #include "vulkan_compute_engine.h"
 #include <cstring>
-#include <vector>
+#include <unordered_map>
+#include <utility>   // for std::pair
 
-#define VK_CHECK(result) if ((result) != VK_SUCCESS) { return false; }
+#define VK_CHECK(cmd) if ((cmd) != VK_SUCCESS) return false
 
 // --------------------------------------------------------------
 // Singleton
@@ -13,46 +14,60 @@ VulkanComputeEngine& VulkanComputeEngine::getInstance() {
 }
 
 // --------------------------------------------------------------
-// Initialization / Shutdown
+// Init / Shutdown
 // --------------------------------------------------------------
 bool VulkanComputeEngine::initialize() {
     if (initialized) return true;
+    VK_CHECK(createInstance());
+    VK_CHECK(pickPhysicalDevice());
+    VK_CHECK(createDevice());
+    VK_CHECK(createCommandPool());
+    VK_CHECK(createDescriptorPool());
+    VK_CHECK(createDescriptorSetLayout());
 
-    if (!createInstance()) return false;
-    if (!pickPhysicalDevice()) return false;
-    if (!createDevice()) return false;
-    if (!createCommandPool()) return false;
-    if (!createDescriptorPool()) return false;
-    if (!createDescriptorSetLayout()) return false;
-    if (!createSampler()) return false;
+    // Allocate a single reusable command buffer for short‑lived operations.
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = commandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+    VK_CHECK(vkAllocateCommandBuffers(device, &allocInfo, &transientCmdBuffer));
 
     initialized = true;
     return true;
 }
 
 void VulkanComputeEngine::shutdown() {
-    if (device != VK_NULL_HANDLE) {
+    if (device) {
         vkDeviceWaitIdle(device);
-        if (defaultSampler != VK_NULL_HANDLE) {
-            vkDestroySampler(device, defaultSampler, nullptr);
-            defaultSampler = VK_NULL_HANDLE;
+
+        // Free cached pipelines & layouts
+        for (auto& [key, pipeline] : pipelineCache)
+            vkDestroyPipeline(device, pipeline, nullptr);
+        pipelineCache.clear();
+
+        for (auto& [pushSize, layout] : layoutCache)
+            vkDestroyPipelineLayout(device, layout, nullptr);
+        layoutCache.clear();
+
+        // Free transient command buffer
+        if (transientCmdBuffer)
+            vkFreeCommandBuffers(device, commandPool, 1, &transientCmdBuffer);
+
+        // Free all tracked images & their memory
+        for (auto& [img, mem] : imageMemoryMap) {
+            vkFreeMemory(device, mem, nullptr);
+            vkDestroyImage(device, img, nullptr);
         }
-        if (descriptorSetLayout != VK_NULL_HANDLE) {
-            vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-            descriptorSetLayout = VK_NULL_HANDLE;
-        }
-        if (descriptorPool != VK_NULL_HANDLE) {
-            vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-            descriptorPool = VK_NULL_HANDLE;
-        }
-        if (commandPool != VK_NULL_HANDLE) {
-            vkDestroyCommandPool(device, commandPool, nullptr);
-            commandPool = VK_NULL_HANDLE;
-        }
+        imageMemoryMap.clear();
+
+        vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+        vkDestroyCommandPool(device, commandPool, nullptr);
         vkDestroyDevice(device, nullptr);
         device = VK_NULL_HANDLE;
     }
-    if (instance != VK_NULL_HANDLE) {
+    if (instance) {
         vkDestroyInstance(instance, nullptr);
         instance = VK_NULL_HANDLE;
     }
@@ -60,48 +75,41 @@ void VulkanComputeEngine::shutdown() {
 }
 
 // --------------------------------------------------------------
-// Instance Creation (no surface extensions)
+// Instance
 // --------------------------------------------------------------
 bool VulkanComputeEngine::createInstance() {
-    VkApplicationInfo appInfo{};
-    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = "HomeCil";
-    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.pEngineName = "No Engine";
-    appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_2;
+    VkApplicationInfo app{};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.pApplicationName = "HomeCil";
+    app.apiVersion = VK_API_VERSION_1_2;
 
-    VkInstanceCreateInfo createInfo{};
-    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    createInfo.pApplicationInfo = &appInfo;
-
-    // No extensions needed for pure compute
-    createInfo.enabledExtensionCount = 0;
-    createInfo.ppEnabledExtensionNames = nullptr;
-
-    VK_CHECK(vkCreateInstance(&createInfo, nullptr, &instance));
+    VkInstanceCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    info.pApplicationInfo = &app;
+    info.enabledExtensionCount = 0;
+    VK_CHECK(vkCreateInstance(&info, nullptr, &instance));
     return true;
 }
 
 // --------------------------------------------------------------
-// Physical Device Selection
+// Physical Device
 // --------------------------------------------------------------
 bool VulkanComputeEngine::pickPhysicalDevice() {
-    uint32_t deviceCount = 0;
-    vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
-    if (deviceCount == 0) return false;
+    uint32_t count = 0;
+    vkEnumeratePhysicalDevices(instance, &count, nullptr);
+    if (!count) return false;
 
-    std::vector<VkPhysicalDevice> devices(deviceCount);
-    vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+    std::vector<VkPhysicalDevice> devices(count);
+    vkEnumeratePhysicalDevices(instance, &count, devices.data());
 
     for (auto dev : devices) {
-        uint32_t queueFamilyCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(dev, &queueFamilyCount, nullptr);
-        std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-        vkGetPhysicalDeviceQueueFamilyProperties(dev, &queueFamilyCount, queueFamilies.data());
+        uint32_t qCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, nullptr);
+        std::vector<VkQueueFamilyProperties> queues(qCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, queues.data());
 
-        for (uint32_t i = 0; i < queueFamilyCount; i++) {
-            if (queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+        for (uint32_t i = 0; i < qCount; i++) {
+            if (queues[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
                 physicalDevice = dev;
                 queueFamilyIndex = i;
                 return true;
@@ -112,25 +120,22 @@ bool VulkanComputeEngine::pickPhysicalDevice() {
 }
 
 // --------------------------------------------------------------
-// Device Creation
+// Device
 // --------------------------------------------------------------
 bool VulkanComputeEngine::createDevice() {
-    float queuePriority = 1.0f;
-    VkDeviceQueueCreateInfo queueCreateInfo{};
-    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueCreateInfo.queueFamilyIndex = queueFamilyIndex;
-    queueCreateInfo.queueCount = 1;
-    queueCreateInfo.pQueuePriorities = &queuePriority;
+    float priority = 1.0f;
+    VkDeviceQueueCreateInfo qInfo{};
+    qInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    qInfo.queueFamilyIndex = queueFamilyIndex;
+    qInfo.queueCount = 1;
+    qInfo.pQueuePriorities = &priority;
 
-    VkPhysicalDeviceFeatures deviceFeatures{};
+    VkDeviceCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    info.pQueueCreateInfos = &qInfo;
+    info.queueCreateInfoCount = 1;
 
-    VkDeviceCreateInfo createInfo{};
-    createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pQueueCreateInfos = &queueCreateInfo;
-    createInfo.queueCreateInfoCount = 1;
-    createInfo.pEnabledFeatures = &deviceFeatures;
-
-    VK_CHECK(vkCreateDevice(physicalDevice, &createInfo, nullptr, &device));
+    VK_CHECK(vkCreateDevice(physicalDevice, &info, nullptr, &device));
     vkGetDeviceQueue(device, queueFamilyIndex, 0, &computeQueue);
     return true;
 }
@@ -139,12 +144,10 @@ bool VulkanComputeEngine::createDevice() {
 // Command Pool
 // --------------------------------------------------------------
 bool VulkanComputeEngine::createCommandPool() {
-    VkCommandPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    poolInfo.queueFamilyIndex = queueFamilyIndex;
-    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-
-    VK_CHECK(vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool));
+    VkCommandPoolCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    info.queueFamilyIndex = queueFamilyIndex;
+    VK_CHECK(vkCreateCommandPool(device, &info, nullptr, &commandPool));
     return true;
 }
 
@@ -152,557 +155,459 @@ bool VulkanComputeEngine::createCommandPool() {
 // Descriptor Pool
 // --------------------------------------------------------------
 bool VulkanComputeEngine::createDescriptorPool() {
-    std::vector<VkDescriptorPoolSize> poolSizes = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 16},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16}
-    };
+    VkDescriptorPoolSize size{};
+    size.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    size.descriptorCount = 8;
 
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = poolSizes.size();
-    poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = 16;
-
-    VK_CHECK(vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool));
+    VkDescriptorPoolCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    info.poolSizeCount = 1;
+    info.pPoolSizes = &size;
+    info.maxSets = 8;
+    VK_CHECK(vkCreateDescriptorPool(device, &info, nullptr, &descriptorPool));
     return true;
 }
 
 // --------------------------------------------------------------
-// Descriptor Set Layout
+// Descriptor Set Layout (only storage images, binding 0)
 // --------------------------------------------------------------
 bool VulkanComputeEngine::createDescriptorSetLayout() {
-    // Bindings: 0=storage, 1=sampler, 2=storage, 3=storage
-    VkDescriptorSetLayoutBinding bindings[4];
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutBinding bind{};
+    bind.binding = 0;
+    bind.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bind.descriptorCount = 1;
+    bind.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    bindings[2].binding = 2;
-    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[2].descriptorCount = 1;
-    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    bindings[3].binding = 3;
-    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[3].descriptorCount = 1;
-    bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 4;
-    layoutInfo.pBindings = bindings;
-
-    VK_CHECK(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout));
+    VkDescriptorSetLayoutCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info.bindingCount = 1;
+    info.pBindings = &bind;
+    VK_CHECK(vkCreateDescriptorSetLayout(device, &info, nullptr, &descriptorSetLayout));
     return true;
 }
 
 // --------------------------------------------------------------
-// Default Sampler
+// Memory type helper
 // --------------------------------------------------------------
-bool VulkanComputeEngine::createSampler() {
-    VkSamplerCreateInfo samplerInfo{};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.anisotropyEnable = VK_FALSE;
-    samplerInfo.maxAnisotropy = 1.0f;
-    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    samplerInfo.unnormalizedCoordinates = VK_FALSE;
-    samplerInfo.compareEnable = VK_FALSE;
-    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-
-    VK_CHECK(vkCreateSampler(device, &samplerInfo, nullptr, &defaultSampler));
-    return true;
+uint32_t VulkanComputeEngine::findMemoryType(uint32_t typeBits,
+                                             VkMemoryPropertyFlags properties) const {
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((typeBits & (1u << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & properties) == properties)
+            return i;
+    }
+    return ~0u; // shouldn't happen for valid requirements
 }
 
 // --------------------------------------------------------------
-// Single-Time Command Buffer Helpers
+// Image Creation
 // --------------------------------------------------------------
-VkCommandBuffer VulkanComputeEngine::beginSingleTimeCommands() {
-    VkCommandBufferAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.commandPool = commandPool;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer commandBuffer;
-    vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
-
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
-    return commandBuffer;
-}
-
-void VulkanComputeEngine::endSingleTimeCommands(VkCommandBuffer commandBuffer) {
-    vkEndCommandBuffer(commandBuffer);
-
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-
-    vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(computeQueue);
-
-    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-}
-
-// --------------------------------------------------------------
-// Image & Memory Creation
-// --------------------------------------------------------------
-VkImage VulkanComputeEngine::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage) {
-    VkImageCreateInfo imageInfo{};
-    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent.width = width;
-    imageInfo.extent.height = height;
-    imageInfo.extent.depth = 1;
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.format = format;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = usage;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+VkImage VulkanComputeEngine::createImage(uint32_t w, uint32_t h,
+                                         VkFormat fmt, VkImageUsageFlags usage) {
+    VkImageCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.extent = {w, h, 1};
+    info.mipLevels = 1;
+    info.arrayLayers = 1;
+    info.format = fmt;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = usage;
+    info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    info.samples = VK_SAMPLE_COUNT_1_BIT;
 
     VkImage image;
-    if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
+    if (vkCreateImage(device, &info, nullptr, &image) != VK_SUCCESS)
         return VK_NULL_HANDLE;
-    }
     return image;
 }
 
 VkImageView VulkanComputeEngine::createImageView(VkImage image, VkFormat format) {
-    VkImageViewCreateInfo viewInfo{};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = format;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
-
-    VkImageView imageView;
-    if (vkCreateImageView(device, &viewInfo, nullptr, &imageView) != VK_SUCCESS) {
+    VkImageViewCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    info.image = image;
+    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    info.format = format;
+    info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkImageView view;
+    if (vkCreateImageView(device, &info, nullptr, &view) != VK_SUCCESS)
         return VK_NULL_HANDLE;
-    }
-    return imageView;
+    return view;
 }
 
-bool VulkanComputeEngine::allocateImageMemory(VkImage image, VkMemoryPropertyFlags properties) {
-    VkMemoryRequirements memRequirements;
-    vkGetImageMemoryRequirements(device, image, &memRequirements);
+bool VulkanComputeEngine::allocateImageMemory(VkImage image,
+                                              VkMemoryPropertyFlags props) {
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(device, image, &req);
 
-    VkPhysicalDeviceMemoryProperties memProperties;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+    uint32_t type = findMemoryType(req.memoryTypeBits, props);
+    if (type == ~0u) return false;
 
-    uint32_t memoryTypeIndex = 0;
-    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        if ((memRequirements.memoryTypeBits & (1 << i)) &&
-            (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-            memoryTypeIndex = i;
-            break;
-        }
-    }
-
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = memoryTypeIndex;
+    VkMemoryAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = type;
 
     VkDeviceMemory memory;
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &memory) != VK_SUCCESS) {
+    if (vkAllocateMemory(device, &alloc, nullptr, &memory) != VK_SUCCESS)
         return false;
-    }
 
     if (vkBindImageMemory(device, image, memory, 0) != VK_SUCCESS) {
         vkFreeMemory(device, memory, nullptr);
         return false;
     }
-    imageMemoryMap[image] = memory;
+
+    imageMemoryMap.emplace_back(image, memory);
     return true;
 }
 
 void VulkanComputeEngine::destroyImage(VkImage image) {
-    auto it = imageMemoryMap.find(image);
-    if (it != imageMemoryMap.end()) {
-        vkFreeMemory(device, it->second, nullptr);
-        imageMemoryMap.erase(it);
+    for (auto it = imageMemoryMap.begin(); it != imageMemoryMap.end(); ++it) {
+        if (it->first == image) {
+            vkFreeMemory(device, it->second, nullptr);
+            imageMemoryMap.erase(it);
+            break;
+        }
     }
     vkDestroyImage(device, image, nullptr);
 }
 
-void VulkanComputeEngine::destroyImageView(VkImageView imageView) {
-    vkDestroyImageView(device, imageView, nullptr);
+void VulkanComputeEngine::destroyImageView(VkImageView view) {
+    vkDestroyImageView(device, view, nullptr);
 }
 
-void VulkanComputeEngine::destroyDescriptorSet(VkDescriptorSet descriptorSet) {
-    vkFreeDescriptorSets(device, descriptorPool, 1, &descriptorSet);
+void VulkanComputeEngine::destroyDescriptorSet(VkDescriptorSet set) {
+    vkFreeDescriptorSets(device, descriptorPool, 1, &set);
 }
 
 // --------------------------------------------------------------
-// Upload Image Data (staging buffer)
+// Upload Image Data
 // --------------------------------------------------------------
-bool VulkanComputeEngine::uploadImageData(VkImage image, void* data, uint32_t width, uint32_t height, VkFormat format) {
-    VkDeviceSize imageSize = width * height * 4; // RGBA8
+bool VulkanComputeEngine::uploadImageData(VkImage image, void* data,
+                                          uint32_t w, uint32_t h) {
+    VkDeviceSize size = w * h * 4;
 
-    // Create staging buffer
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = imageSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    // Staging buffer
+    VkBufferCreateInfo bufInfo{};
+    bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufInfo.size = size;
+    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
-    VkBuffer stagingBuffer;
-    if (vkCreateBuffer(device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS) return false;
+    VkBuffer staging;
+    if (vkCreateBuffer(device, &bufInfo, nullptr, &staging) != VK_SUCCESS)
+        return false;
 
-    VkMemoryRequirements memReqs;
-    vkGetBufferMemoryRequirements(device, stagingBuffer, &memReqs);
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memReqs.size;
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device, staging, &req);
 
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
-    uint32_t memType = 0;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
-        if ((memReqs.memoryTypeBits & (1 << i)) &&
-            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            memType = i;
-            break;
-        }
-    }
-    VkDeviceMemory stagingMemory;
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
+    uint32_t type = findMemoryType(req.memoryTypeBits,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (type == ~0u) {
+        vkDestroyBuffer(device, staging, nullptr);
         return false;
     }
-    vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
 
-    // Map and copy data
+    VkMemoryAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = type;
+
+    VkDeviceMemory stagingMem;
+    if (vkAllocateMemory(device, &alloc, nullptr, &stagingMem) != VK_SUCCESS) {
+        vkDestroyBuffer(device, staging, nullptr);
+        return false;
+    }
+    vkBindBufferMemory(device, staging, stagingMem, 0);
+
+    // Copy data to staging
     void* mapped;
-    vkMapMemory(device, stagingMemory, 0, imageSize, 0, &mapped);
-    memcpy(mapped, data, imageSize);
-    vkUnmapMemory(device, stagingMemory);
+    vkMapMemory(device, stagingMem, 0, size, 0, &mapped);
+    memcpy(mapped, data, size);
+    vkUnmapMemory(device, stagingMem);
 
-    // Use single-time command buffer to copy
-    VkCommandBuffer cmd = beginSingleTimeCommands();
+    // Reuse transient command buffer (safe because we wait idle below)
+    VkCommandBuffer cmd = transientCmdBuffer;
+    vkResetCommandBuffer(cmd, 0);
 
-    // Transition image to transfer destination layout
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &begin);
+
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.srcQueueFamilyIndex = queueFamilyIndex;
-    barrier.dstQueueFamilyIndex = queueFamilyIndex;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     barrier.srcAccessMask = 0;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-    // Copy buffer to image
     VkBufferImageCopy region{};
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.mipLevel = 0;
-    region.imageSubresource.baseArrayLayer = 0;
-    region.imageSubresource.layerCount = 1;
-    region.imageExtent.width = width;
-    region.imageExtent.height = height;
-    region.imageExtent.depth = 1;
-    vkCmdCopyBufferToImage(cmd, stagingBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {w, h, 1};
+    vkCmdCopyBufferToImage(cmd, staging, image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    // Transition back to shader read only (or general) layout
+    // Transition to GENERAL for compute access
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-    endSingleTimeCommands(cmd);
+    vkEndCommandBuffer(cmd);
 
-    // Cleanup staging
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingMemory, nullptr);
+    VkSubmitInfo submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd;
+    vkQueueSubmit(computeQueue, 1, &submit, VK_NULL_HANDLE);
+    vkQueueWaitIdle(computeQueue);
+
+    // Staging buffer no longer needed
+    vkDestroyBuffer(device, staging, nullptr);
+    vkFreeMemory(device, stagingMem, nullptr);
+
     return true;
 }
 
 // --------------------------------------------------------------
-// Descriptor Set Creation
+// Descriptor Set
 // --------------------------------------------------------------
-VkDescriptorSet VulkanComputeEngine::createStorageImageDescriptorSet(VkImageView imageView) {
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descriptorSetLayout;
+VkDescriptorSet VulkanComputeEngine::createStorageImageDescriptorSet(
+    VkImageView view) {
+    VkDescriptorSetAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc.descriptorPool = descriptorPool;
+    alloc.descriptorSetCount = 1;
+    alloc.pSetLayouts = &descriptorSetLayout;
 
-    VkDescriptorSet descriptorSet;
-    if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
+    VkDescriptorSet set;
+    if (vkAllocateDescriptorSets(device, &alloc, &set) != VK_SUCCESS)
         return VK_NULL_HANDLE;
-    }
 
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.imageView = imageView;
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorImageInfo img{};
+    img.imageView = view;
+    img.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkWriteDescriptorSet write{};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descriptorSet;
+    write.dstSet = set;
     write.dstBinding = 0;
-    write.dstArrayElement = 0;
     write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     write.descriptorCount = 1;
-    write.pImageInfo = &imageInfo;
+    write.pImageInfo = &img;
 
     vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-    return descriptorSet;
-}
-
-VkDescriptorSet VulkanComputeEngine::createCombinedImageDescriptorSet(VkImageView imageView, VkSampler sampler) {
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descriptorSetLayout;
-
-    VkDescriptorSet descriptorSet;
-    if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
-        return VK_NULL_HANDLE;
-    }
-
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.imageView = imageView;
-    imageInfo.sampler = (sampler != VK_NULL_HANDLE) ? sampler : defaultSampler;
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descriptorSet;
-    write.dstBinding = 1;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo = &imageInfo;
-
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-    return descriptorSet;
+    return set;
 }
 
 // --------------------------------------------------------------
-// Dispatch
+// Dispatch (now with pipeline/layout caching)
 // --------------------------------------------------------------
 bool VulkanComputeEngine::dispatchCompute(
-    VkShaderModule shaderModule,
-    const std::vector<VkDescriptorSet>& descriptorSets,
-    const void* pushConstants,
-    size_t pushConstantsSize,
-    uint32_t workX, uint32_t workY, uint32_t workZ) {
+    VkShaderModule shader,
+    const std::vector<VkDescriptorSet>& sets,
+    const void* push,
+    size_t pushSize,
+    uint32_t wx, uint32_t wy, uint32_t wz) {
 
-    if (!device || !commandPool || !shaderModule) return false;
+    if (!device || !shader) return false;
 
-    VkPushConstantRange pushRange{};
-    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pushRange.offset = 0;
-    pushRange.size = pushConstantsSize;
+    // Cache key = (shader, pushSize)
+    auto key = std::make_pair(shader, (uint32_t)pushSize);
 
-    VkPipelineLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layoutInfo.pushConstantRangeCount = (pushConstantsSize > 0) ? 1 : 0;
-    layoutInfo.pPushConstantRanges = &pushRange;
-    layoutInfo.setLayoutCount = 1;
-    layoutInfo.pSetLayouts = &descriptorSetLayout;
+    // Get or create pipeline layout for this push size
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    auto layoutIt = layoutCache.find(pushSize);
+    if (layoutIt != layoutCache.end()) {
+        layout = layoutIt->second;
+    } else {
+        VkPushConstantRange range{};
+        range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        range.size = static_cast<uint32_t>(pushSize);
 
-    VkPipelineLayout pipelineLayout;
-    if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-        return false;
+        VkPipelineLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = &descriptorSetLayout;
+        if (pushSize > 0) {
+            layoutInfo.pushConstantRangeCount = 1;
+            layoutInfo.pPushConstantRanges = &range;
+        } // else nullptr
+
+        if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &layout) != VK_SUCCESS)
+            return false;
+        layoutCache[pushSize] = layout;
     }
 
-    VkComputePipelineCreateInfo pipelineInfo{};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    pipelineInfo.stage.module = shaderModule;
-    pipelineInfo.stage.pName = "main";
-    pipelineInfo.layout = pipelineLayout;
+    // Get or create compute pipeline for (shader, pushSize)
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    auto pipeIt = pipelineCache.find(key);
+    if (pipeIt != pipelineCache.end()) {
+        pipeline = pipeIt->second;
+    } else {
+        VkComputePipelineCreateInfo pipeInfo{};
+        pipeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipeInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipeInfo.stage.module = shader;
+        pipeInfo.stage.pName = "main";
+        pipeInfo.layout = layout;
 
-    VkPipeline pipeline;
-    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        return false;
+        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
+                                     &pipeInfo, nullptr, &pipeline) != VK_SUCCESS)
+            return false;
+        pipelineCache[key] = pipeline;
     }
 
-    VkCommandBuffer cmd;
-    VkCommandBufferAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.commandPool = commandPool;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(device, &allocInfo, &cmd) != VK_SUCCESS) {
-        vkDestroyPipeline(device, pipeline, nullptr);
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        return false;
-    }
+    // Reuse transient command buffer
+    VkCommandBuffer cmd = transientCmdBuffer;
+    vkResetCommandBuffer(cmd, 0);
 
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &beginInfo);
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &begin);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
-    if (!descriptorSets.empty()) {
+    if (!sets.empty()) {
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                               pipelineLayout, 0, descriptorSets.size(),
-                               descriptorSets.data(), 0, nullptr);
+                                layout, 0, (uint32_t)sets.size(),
+                                sets.data(), 0, nullptr);
     }
 
-    if (pushConstants && pushConstantsSize > 0) {
-        vkCmdPushConstants(cmd, pipelineLayout,
-                          VK_SHADER_STAGE_COMPUTE_BIT, 0, pushConstantsSize, pushConstants);
+    if (push && pushSize > 0) {
+        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, (uint32_t)pushSize, push);
     }
 
-    vkCmdDispatch(cmd, workX, workY, workZ);
+    vkCmdDispatch(cmd, wx, wy, wz);
     vkEndCommandBuffer(cmd);
 
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &cmd;
-
-    VkResult result = vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    if (result != VK_SUCCESS) {
-        vkDestroyPipeline(device, pipeline, nullptr);
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        vkFreeCommandBuffers(device, commandPool, 1, &cmd);
-        return false;
-    }
+    VkSubmitInfo submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd;
+    vkQueueSubmit(computeQueue, 1, &submit, VK_NULL_HANDLE);
     vkQueueWaitIdle(computeQueue);
 
-    vkDestroyPipeline(device, pipeline, nullptr);
-    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-    vkFreeCommandBuffers(device, commandPool, 1, &cmd);
-
+    // Pipelines and layouts are cached – do NOT destroy them here!
     return true;
 }
 
 // --------------------------------------------------------------
-// Copy Image to Host (Readback)
+// Readback
 // --------------------------------------------------------------
-bool VulkanComputeEngine::copyImageToHost(VkImage image, void* dstData, uint32_t width, uint32_t height, VkFormat format) {
-    VkDeviceSize imageSize = width * height * 4;
+bool VulkanComputeEngine::copyImageToHost(VkImage image, void* dst,
+                                          uint32_t w, uint32_t h) {
+    VkDeviceSize size = w * h * 4;
 
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = imageSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    // Staging buffer
+    VkBufferCreateInfo bufInfo{};
+    bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufInfo.size = size;
+    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-    VkBuffer stagingBuffer;
-    if (vkCreateBuffer(device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS) return false;
+    VkBuffer staging;
+    if (vkCreateBuffer(device, &bufInfo, nullptr, &staging) != VK_SUCCESS)
+        return false;
 
-    VkMemoryRequirements memReqs;
-    vkGetBufferMemoryRequirements(device, stagingBuffer, &memReqs);
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memReqs.size;
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device, staging, &req);
 
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
-    uint32_t memType = 0;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
-        if ((memReqs.memoryTypeBits & (1 << i)) &&
-            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            memType = i;
-            break;
-        }
-    }
-    VkDeviceMemory stagingMemory;
-    if (vkAllocateMemory(device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
+    uint32_t type = findMemoryType(req.memoryTypeBits,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (type == ~0u) {
+        vkDestroyBuffer(device, staging, nullptr);
         return false;
     }
-    vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
 
-    VkCommandBuffer cmd = beginSingleTimeCommands();
+    VkMemoryAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = type;
 
-    // Transition image to transfer source layout
+    VkDeviceMemory stagingMem;
+    if (vkAllocateMemory(device, &alloc, nullptr, &stagingMem) != VK_SUCCESS) {
+        vkDestroyBuffer(device, staging, nullptr);
+        return false;
+    }
+    vkBindBufferMemory(device, staging, stagingMem, 0);
+
+    // Reuse transient command buffer
+    VkCommandBuffer cmd = transientCmdBuffer;
+    vkResetCommandBuffer(cmd, 0);
+
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &begin);
+
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    barrier.srcQueueFamilyIndex = queueFamilyIndex;
-    barrier.dstQueueFamilyIndex = queueFamilyIndex;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                        0, nullptr, 0, nullptr, 1, &barrier);
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-    // Copy image to buffer
     VkBufferImageCopy region{};
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.mipLevel = 0;
-    region.imageSubresource.baseArrayLayer = 0;
-    region.imageSubresource.layerCount = 1;
-    region.imageExtent.width = width;
-    region.imageExtent.height = height;
-    region.imageExtent.depth = 1;
-    vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                          stagingBuffer, 1, &region);
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {w, h, 1};
+    vkCmdCopyImageToBuffer(cmd, image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           staging, 1, &region);
 
-    // Transition back to general layout
+    // Transition back to GENERAL
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-                        0, nullptr, 0, nullptr, 1, &barrier);
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-    endSingleTimeCommands(cmd);
+    vkEndCommandBuffer(cmd);
 
-    // Map and copy data
+    VkSubmitInfo submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd;
+    vkQueueSubmit(computeQueue, 1, &submit, VK_NULL_HANDLE);
+    vkQueueWaitIdle(computeQueue);
+
+    // Copy data from staging
     void* mapped;
-    if (vkMapMemory(device, stagingMemory, 0, imageSize, 0, &mapped) != VK_SUCCESS) {
-        vkDestroyBuffer(device, stagingBuffer, nullptr);
-        vkFreeMemory(device, stagingMemory, nullptr);
-        return false;
-    }
-    memcpy(dstData, mapped, imageSize);
-    vkUnmapMemory(device, stagingMemory);
+    vkMapMemory(device, stagingMem, 0, size, 0, &mapped);
+    memcpy(dst, mapped, size);
+    vkUnmapMemory(device, stagingMem);
 
-    vkDestroyBuffer(device, stagingBuffer, nullptr);
-    vkFreeMemory(device, stagingMemory, nullptr);
+    vkDestroyBuffer(device, staging, nullptr);
+    vkFreeMemory(device, stagingMem, nullptr);
+
     return true;
 }

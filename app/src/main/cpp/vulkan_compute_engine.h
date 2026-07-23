@@ -2,18 +2,13 @@
 
 #include <vulkan/vulkan.h>
 #include <vector>
+#include <utility>
 #include <unordered_map>
 
-/**
- * VulkanComputeEngine – pure compute engine (no presentation).
- * Manages instance, device, queues, memory, images, descriptor sets,
- * and dispatch for compute shaders.
- */
 class VulkanComputeEngine {
 public:
     static VulkanComputeEngine& getInstance();
 
-    // Initialize Vulkan (no window needed)
     bool initialize();
     void shutdown();
 
@@ -23,9 +18,8 @@ public:
     VkCommandPool getCommandPool() const { return commandPool; }
     VkDescriptorPool getDescriptorPool() const { return descriptorPool; }
     VkDescriptorSetLayout getDescriptorSetLayout() const { return descriptorSetLayout; }
-    VkSampler getDefaultSampler() const { return defaultSampler; }
 
-    // Image creation / destruction
+    // Image management
     VkImage createImage(uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage);
     VkImageView createImageView(VkImage image, VkFormat format);
     bool allocateImageMemory(VkImage image, VkMemoryPropertyFlags properties);
@@ -33,14 +27,13 @@ public:
     void destroyImageView(VkImageView imageView);
     void destroyDescriptorSet(VkDescriptorSet descriptorSet);
 
-    // Upload pixel data to image (via staging buffer)
-    bool uploadImageData(VkImage image, void* data, uint32_t width, uint32_t height, VkFormat format);
+    // Upload pixel data to image
+    bool uploadImageData(VkImage image, void* data, uint32_t width, uint32_t height);
 
-    // Descriptor set creation
+    // Create a descriptor set for a storage image (binding 0)
     VkDescriptorSet createStorageImageDescriptorSet(VkImageView imageView);
-    VkDescriptorSet createCombinedImageDescriptorSet(VkImageView imageView, VkSampler sampler = VK_NULL_HANDLE);
 
-    // Dispatch a compute shader
+    // Dispatch compute shader with caching
     bool dispatchCompute(
         VkShaderModule shaderModule,
         const std::vector<VkDescriptorSet>& descriptorSets,
@@ -49,25 +42,21 @@ public:
         uint32_t workX, uint32_t workY, uint32_t workZ
     );
 
-    // Copy image back to host memory (readback)
-    bool copyImageToHost(VkImage image, void* dstData, uint32_t width, uint32_t height, VkFormat format);
+    // Readback image to host
+    bool copyImageToHost(VkImage image, void* dstData, uint32_t width, uint32_t height);
 
 private:
     VulkanComputeEngine() = default;
     ~VulkanComputeEngine() = default;
 
-    // Internal helpers
     bool createInstance();
     bool pickPhysicalDevice();
     bool createDevice();
     bool createCommandPool();
     bool createDescriptorPool();
     bool createDescriptorSetLayout();
-    bool createSampler();
 
-    // Single‑time command buffer helpers (for upload/copy)
-    VkCommandBuffer beginSingleTimeCommands();
-    void endSingleTimeCommands(VkCommandBuffer commandBuffer);
+    uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
 
     // Vulkan handles
     VkInstance instance = VK_NULL_HANDLE;
@@ -77,11 +66,28 @@ private:
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
-    VkSampler defaultSampler = VK_NULL_HANDLE;
 
-    // Map image -> device memory for automatic cleanup
-    std::unordered_map<VkImage, VkDeviceMemory> imageMemoryMap;
+    // Reusable command buffer
+    VkCommandBuffer transientCmdBuffer = VK_NULL_HANDLE;
+
+    // Caches for pipelines and layouts
+    std::unordered_map<std::pair<VkShaderModule, uint32_t>, VkPipeline> pipelineCache;
+    std::unordered_map<size_t, VkPipelineLayout> layoutCache;
+
+    // Track image memory for cleanup
+    std::vector<std::pair<VkImage, VkDeviceMemory>> imageMemoryMap;
 
     uint32_t queueFamilyIndex = 0;
     bool initialized = false;
 };
+
+// Hash specialization for unordered_map with pair key
+namespace std {
+    template<>
+    struct hash<std::pair<VkShaderModule, uint32_t>> {
+        size_t operator()(const std::pair<VkShaderModule, uint32_t>& p) const {
+            return hash<uint64_t>()(reinterpret_cast<uint64_t>(p.first)) ^
+                   (hash<uint32_t>()(p.second) << 1);
+        }
+    };
+}
