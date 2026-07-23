@@ -70,8 +70,16 @@ private:
     // Reusable command buffer
     VkCommandBuffer transientCmdBuffer = VK_NULL_HANDLE;
 
+    // Custom hash for std::pair<VkShaderModule, uint32_t>
+    struct ShaderPushPairHash {
+        size_t operator()(const std::pair<VkShaderModule, uint32_t>& p) const noexcept {
+            return std::hash<VkShaderModule>()(p.first) ^
+                   (std::hash<uint32_t>()(p.second) << 1);
+        }
+    };
+
     // Caches for pipelines and layouts
-    std::unordered_map<std::pair<VkShaderModule, uint32_t>, VkPipeline> pipelineCache;
+    std::unordered_map<std::pair<VkShaderModule, uint32_t>, VkPipeline, ShaderPushPairHash> pipelineCache;
     std::unordered_map<size_t, VkPipelineLayout> layoutCache;
 
     // Track image memory for cleanup
@@ -81,13 +89,4 @@ private:
     bool initialized = false;
 };
 
-// Hash specialization for unordered_map with pair key
-namespace std {
-    template<>
-    struct hash<std::pair<VkShaderModule, uint32_t>> {
-        size_t operator()(const std::pair<VkShaderModule, uint32_t>& p) const {
-            return hash<uint64_t>()(reinterpret_cast<uint64_t>(p.first)) ^
-                   (hash<uint32_t>()(p.second) << 1);
-        }
-    };
-}
+// (No longer need the std::hash specialization here – it is replaced by the custom functor above.)
