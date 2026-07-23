@@ -1,21 +1,28 @@
 #include <jni.h>
 #include <android/bitmap.h>
-#include <EGL/egl.h>
-#include <GLES3/gl31.h>
 #include <cstring>
 #include <ctime>
 #include <algorithm>
-#include "shader_loader.h"   // provides getCapillaryProgram(), getPhysicsProgram(), getCompositeProgram()
+#include <unordered_map>
+#include "shader_loader.h"
+#include "vulkan_compute_engine.h"
 
 // ---------- Constants ----------
 static const float SIMULATION_SCALE = 0.5f; // 50% resolution
 
-// ---------- GPU Resources ----------
-static GLuint paperTexture = 0;
-static GLuint capillaryMap = 0;
-static GLuint inkTextureA = 0;  // ping
-static GLuint inkTextureB = 0;  // pong
-static GLuint outputTexture = 0;
+// ---------- Vulkan Resources ----------
+static VulkanComputeEngine& engine = VulkanComputeEngine::getInstance();
+
+static VkImage paperImage = VK_NULL_HANDLE;
+static VkImageView paperView = VK_NULL_HANDLE;
+static VkImage capillaryImage = VK_NULL_HANDLE;
+static VkImageView capillaryView = VK_NULL_HANDLE;
+static VkImage inkImageA = VK_NULL_HANDLE;  // ping
+static VkImageView inkViewA = VK_NULL_HANDLE;
+static VkImage inkImageB = VK_NULL_HANDLE;  // pong
+static VkImageView inkViewB = VK_NULL_HANDLE;
+static VkImage outputImage = VK_NULL_HANDLE;
+static VkImageView outputView = VK_NULL_HANDLE;
 
 static bool useTextureA = true;
 static int fullWidth = 0;
@@ -23,23 +30,25 @@ static int fullHeight = 0;
 static int simWidth = 0;
 static int simHeight = 0;
 
+// Descriptor sets (cached)
+static VkDescriptorSet capillaryDescSet = VK_NULL_HANDLE;
+static VkDescriptorSet physicsDescSet = VK_NULL_HANDLE;
+static VkDescriptorSet compositeDescSet = VK_NULL_HANDLE;
+
 // Dirty rectangle tracking
 struct DirtyRect {
     int x, y, w, h;
     bool valid;
 } dirtyRect = {0, 0, 0, 0, false};
 
-// ---------- Forward declarations ----------
-bool initOpenGL();   // defined in native-lib.cpp
-
-// ---------- Helper function prototypes ----------
-void ensureTextures();
+// ---------- Helper prototypes ----------
+bool ensureResources();
 void generateCapillaryMap();
 void updateDirtyRect(int offsetX, int offsetY, int stampW, int stampH);
-void runPhysicsSimulation(GLuint stampTexture);
+void runPhysicsSimulation(VkImage stampImage, VkImageView stampView);
 void runComposite();
 void readBackToBitmap(void* paperPixels);
-GLuint uploadStampTexture(void* pixels, int width, int height);
+VkImage uploadStampTexture(void* pixels, int width, int height, VkImageView& outView);
 
 // ---------- JNI Entry Point ----------
 extern "C"
@@ -63,237 +72,411 @@ Java_com_example_homecil_PaperRenderer_simulateInk(
         return;
     }
 
-    // 2. Initialize GL if needed
-    if (!initOpenGL()) {
+    // 2. Initialize Vulkan (if not done)
+    if (!engine.initialize()) {
         AndroidBitmap_unlockPixels(env, paperBitmap);
         AndroidBitmap_unlockPixels(env, inkBitmap);
         return;
     }
 
-    // 3. Create/update textures
+    // 3. Set device in shader loader
+    setVulkanDevice(engine.getDevice());
+
+    // 4. Store dimensions and create resources if first time or size changed
     fullWidth = paperInfo.width;
     fullHeight = paperInfo.height;
     simWidth = (int)(fullWidth * SIMULATION_SCALE);
     simHeight = (int)(fullHeight * SIMULATION_SCALE);
 
-    ensureTextures();
+    if (!ensureResources()) {
+        AndroidBitmap_unlockPixels(env, paperBitmap);
+        AndroidBitmap_unlockPixels(env, inkBitmap);
+        return;
+    }
 
-    // 4. Create stamp texture
-    GLuint stampTexture = uploadStampTexture(inkPixels, inkInfo.width, inkInfo.height);
+    // 5. Upload paper bitmap to Vulkan image (if changed)
+    // We'll upload every time for simplicity – could optimize with dirty flag
+    if (!engine.uploadImageData(paperImage, paperPixels, fullWidth, fullHeight, VK_FORMAT_R8G8B8A8_UNORM)) {
+        AndroidBitmap_unlockPixels(env, paperBitmap);
+        AndroidBitmap_unlockPixels(env, inkBitmap);
+        return;
+    }
 
-    // 5. Update dirty rectangle
+    // 6. Upload stamp bitmap to a temporary image
+    VkImageView stampView = VK_NULL_HANDLE;
+    VkImage stampImage = uploadStampTexture(inkPixels, inkInfo.width, inkInfo.height, stampView);
+    if (!stampImage) {
+        AndroidBitmap_unlockPixels(env, paperBitmap);
+        AndroidBitmap_unlockPixels(env, inkBitmap);
+        return;
+    }
+
+    // 7. Update dirty rectangle
     updateDirtyRect(offsetX, offsetY, inkInfo.width, inkInfo.height);
 
-    // 6. Run physics simulation (at lower resolution)
-    runPhysicsSimulation(stampTexture);
+    // 8. Run physics simulation (at lower resolution)
+    runPhysicsSimulation(stampImage, stampView);
 
-    // 7. Composite full resolution
+    // 9. Composite at full resolution
     runComposite();
 
-    // 8. Read back to bitmap
+    // 10. Read back to bitmap
     readBackToBitmap(paperPixels);
 
-    // 9. Cleanup
-    glDeleteTextures(1, &stampTexture);
+    // 11. Cleanup stamp
+    engine.destroyImage(stampImage);
+    engine.destroyImageView(stampView);
+
     AndroidBitmap_unlockPixels(env, paperBitmap);
     AndroidBitmap_unlockPixels(env, inkBitmap);
 }
 
 // ---------- Helper Functions ----------
 
-void ensureTextures() {
-    if (paperTexture == 0) {
-        // Create paper texture
-        glGenTextures(1, &paperTexture);
-        glBindTexture(GL_TEXTURE_2D, paperTexture);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, fullWidth, fullHeight);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+bool ensureResources() {
+    // Create paper image (full resolution)
+    if (paperImage == VK_NULL_HANDLE) {
+        paperImage = engine.createImage(fullWidth, fullHeight, VK_FORMAT_R8G8B8A8_UNORM,
+                                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        if (!paperImage) return false;
+        if (!engine.allocateImageMemory(paperImage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
+        paperView = engine.createImageView(paperImage, VK_FORMAT_R8G8B8A8_UNORM);
+        if (!paperView) return false;
 
-        // Generate capillary map (once)
+        // Create capillary map (simulation resolution, RG32F)
+        capillaryImage = engine.createImage(simWidth, simHeight, VK_FORMAT_R32G32_SFLOAT,
+                                            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        if (!capillaryImage) return false;
+        if (!engine.allocateImageMemory(capillaryImage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
+        capillaryView = engine.createImageView(capillaryImage, VK_FORMAT_R32G32_SFLOAT);
+        if (!capillaryView) return false;
+
+        // Generate capillary map
         generateCapillaryMap();
 
-        // Create ink textures (simulation resolution)
-        glGenTextures(1, &inkTextureA);
-        glGenTextures(1, &inkTextureB);
-        glBindTexture(GL_TEXTURE_2D, inkTextureA);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, simWidth, simHeight);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        // Create ink textures (simulation resolution, RGBA8) – ping and pong
+        inkImageA = engine.createImage(simWidth, simHeight, VK_FORMAT_R8G8B8A8_UNORM,
+                                       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        if (!inkImageA) return false;
+        if (!engine.allocateImageMemory(inkImageA, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
+        inkViewA = engine.createImageView(inkImageA, VK_FORMAT_R8G8B8A8_UNORM);
+        if (!inkViewA) return false;
 
-        glBindTexture(GL_TEXTURE_2D, inkTextureB);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, simWidth, simHeight);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        inkImageB = engine.createImage(simWidth, simHeight, VK_FORMAT_R8G8B8A8_UNORM,
+                                       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        if (!inkImageB) return false;
+        if (!engine.allocateImageMemory(inkImageB, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
+        inkViewB = engine.createImageView(inkImageB, VK_FORMAT_R8G8B8A8_UNORM);
+        if (!inkViewB) return false;
 
-        // Clear both to transparent
-        uint32_t* clearPixels = new uint32_t[simWidth * simHeight];
-        memset(clearPixels, 0, simWidth * simHeight * sizeof(uint32_t));
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, simWidth, simHeight,
-                        GL_RGBA, GL_UNSIGNED_BYTE, clearPixels);
-        glBindTexture(GL_TEXTURE_2D, inkTextureB);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, simWidth, simHeight,
-                        GL_RGBA, GL_UNSIGNED_BYTE, clearPixels);
-        delete[] clearPixels;
+        // Clear ink layers to transparent (0,0,0,0)
+        uint32_t* clearData = new uint32_t[simWidth * simHeight];
+        memset(clearData, 0, simWidth * simHeight * sizeof(uint32_t));
+        engine.uploadImageData(inkImageA, clearData, simWidth, simHeight, VK_FORMAT_R8G8B8A8_UNORM);
+        engine.uploadImageData(inkImageB, clearData, simWidth, simHeight, VK_FORMAT_R8G8B8A8_UNORM);
+        delete[] clearData;
 
-        // Create output texture (full resolution)
-        glGenTextures(1, &outputTexture);
-        glBindTexture(GL_TEXTURE_2D, outputTexture);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, fullWidth, fullHeight);
+        // Create output image (full resolution)
+        outputImage = engine.createImage(fullWidth, fullHeight, VK_FORMAT_R8G8B8A8_UNORM,
+                                         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+        if (!outputImage) return false;
+        if (!engine.allocateImageMemory(outputImage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
+        outputView = engine.createImageView(outputImage, VK_FORMAT_R8G8B8A8_UNORM);
+        if (!outputView) return false;
     }
+
+    return true;
 }
 
 void generateCapillaryMap() {
-    // Get the pre‑compiled capillary program
-    GLuint program = getCapillaryProgram();
-    if (!program) return;
+    // Get the capillary shader module
+    VkShaderModule shaderModule = getCapillaryShaderModule();
+    if (!shaderModule) return;
 
-    // Create capillary map texture (RG32F)
-    glGenTextures(1, &capillaryMap);
-    glBindTexture(GL_TEXTURE_2D, capillaryMap);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RG32F, simWidth, simHeight);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // Create descriptor set for capillary map (storage image)
+    capillaryDescSet = engine.createStorageImageDescriptorSet(capillaryView);
+    if (!capillaryDescSet) return;
+
+    // Push constants for capillary generation
+    struct CapillaryPush {
+        float mapSize[2];
+        uint32_t seed;
+    } pc;
+    pc.mapSize[0] = simWidth;
+    pc.mapSize[1] = simHeight;
+    pc.seed = (uint32_t)time(nullptr);
 
     // Dispatch
-    glUseProgram(program);
-    glBindImageTexture(0, capillaryMap, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RG32F);
-    glUniform2f(glGetUniformLocation(program, "uMapSize"), simWidth, simHeight);
-    glUniform1ui(glGetUniformLocation(program, "uSeed"), (uint32_t)time(nullptr));
-
-    int workX = (simWidth + 15) / 16;
-    int workY = (simHeight + 15) / 16;
-    glDispatchCompute(workX, workY, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    engine.dispatchCompute(shaderModule, {capillaryDescSet}, &pc, sizeof(pc),
+                          (simWidth + 15) / 16, (simHeight + 15) / 16, 1);
 }
 
 void updateDirtyRect(int offsetX, int offsetY, int stampW, int stampH) {
     // Convert to simulation coordinates
     int simX = (int)(offsetX * SIMULATION_SCALE);
     int simY = (int)(offsetY * SIMULATION_SCALE);
-    int simW = (int)(stampW * SIMULATION_SCALE) + 4; // padding
+    int simW = (int)(stampW * SIMULATION_SCALE) + 4;
     int simH = (int)(stampH * SIMULATION_SCALE) + 4;
 
     if (!dirtyRect.valid) {
         dirtyRect = {simX, simY, simW, simH, true};
     } else {
-        // Expand dirty rectangle to include new stamp
         int x1 = std::min(dirtyRect.x, simX);
         int y1 = std::min(dirtyRect.y, simY);
         int x2 = std::max(dirtyRect.x + dirtyRect.w, simX + simW);
         int y2 = std::max(dirtyRect.y + dirtyRect.h, simY + simH);
         dirtyRect = {x1, y1, x2 - x1, y2 - y1, true};
     }
-
-    // Clamp to simulation size
     dirtyRect.x = std::max(0, dirtyRect.x);
     dirtyRect.y = std::max(0, dirtyRect.y);
     dirtyRect.w = std::min(simWidth - dirtyRect.x, dirtyRect.w);
     dirtyRect.h = std::min(simHeight - dirtyRect.y, dirtyRect.h);
 }
 
-void runPhysicsSimulation(GLuint stampTexture) {
-    // Get the pre‑compiled physics program
-    GLuint program = getPhysicsProgram();
-    if (!program) return;
+void runPhysicsSimulation(VkImage stampImage, VkImageView stampView) {
+    // Get physics shader module
+    VkShaderModule shaderModule = getPhysicsShaderModule();
+    if (!shaderModule) return;
 
-    GLuint inputTex = useTextureA ? inkTextureA : inkTextureB;
-    GLuint outputTex = useTextureA ? inkTextureB : inkTextureA;
+    // Choose input/output ink images
+    VkImageView inputView = useTextureA ? inkViewA : inkViewB;
+    VkImageView outputView = useTextureA ? inkViewB : inkViewA;
 
-    glUseProgram(program);
+    // Create descriptor set for physics:
+    // Binding 0: stamp sampler (combined image sampler)
+    // Binding 1: capillary sampler (combined image sampler)
+    // Binding 2: input ink (storage image, readonly)
+    // Binding 3: output ink (storage image, writeonly)
+    // We'll create a single descriptor set with all bindings.
+    // We need to allocate a descriptor set from the pool.
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = engine.getDescriptorPool(); // need to expose this
+    // Actually, we need to expose descriptor pool from engine. We'll add a getter.
+    // For now, we'll assume the engine provides a method to create a descriptor set with custom bindings.
+    // Since the engine's layout has bindings 0-3, we can create a set and update all.
+    // We'll use the engine's helper to create a combined image sampler descriptor set for bindings 0 and 1,
+    // but we need a single set with both storage and sampler. The engine's current helpers create separate sets.
+    // Simpler: we'll create a descriptor set manually.
+    // We'll modify the engine to expose a method to create a descriptor set with multiple writes.
+    // For brevity, I'll assume we have a helper in the engine: createDescriptorSet.
+    // I'll add that in the engine implementation.
 
-    // Bind textures
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, stampTexture);
-    glUniform1i(glGetUniformLocation(program, "uStampTexture"), 0);
+    // For now, we'll create the descriptor set each time (caching is better, but we'll keep it simple).
+    // We'll use the engine's descriptor pool and layout.
+    VkDescriptorSet descSet;
+    VkDescriptorSetAllocateInfo alloc = {};
+    alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc.descriptorPool = engine.getDescriptorPool();
+    alloc.descriptorSetCount = 1;
+    alloc.pSetLayouts = &engine.getDescriptorSetLayout();
+    if (vkAllocateDescriptorSets(engine.getDevice(), &alloc, &descSet) != VK_SUCCESS) {
+        return;
+    }
 
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, capillaryMap);
-    glUniform1i(glGetUniformLocation(program, "uCapillaryMap"), 1);
+    // Prepare writes
+    VkDescriptorImageInfo stampInfo{};
+    stampInfo.imageView = stampView;
+    stampInfo.sampler = engine.getDefaultSampler();
+    stampInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Bind ink textures (read/write)
-    glBindImageTexture(0, inputTex, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
-    glBindImageTexture(1, outputTex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+    VkDescriptorImageInfo capillaryInfo{};
+    capillaryInfo.imageView = capillaryView;
+    capillaryInfo.sampler = engine.getDefaultSampler();
+    capillaryInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // Set uniforms
-    auto setFloat = [&](const char* name, float value) {
-        GLint loc = glGetUniformLocation(program, name);
-        if (loc >= 0) glUniform1f(loc, value);
-    };
-    auto setVec2 = [&](const char* name, float x, float y) {
-        GLint loc = glGetUniformLocation(program, name);
-        if (loc >= 0) glUniform2f(loc, x, y);
-    };
-    auto setVec4 = [&](const char* name, float x, float y, float z, float w) {
-        GLint loc = glGetUniformLocation(program, name);
-        if (loc >= 0) glUniform4f(loc, x, y, z, w);
-    };
+    VkDescriptorImageInfo inputInfo{};
+    inputInfo.imageView = inputView;
+    inputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL; // storage image
 
-    setVec2("uSimSize", (float)simWidth, (float)simHeight);
-    setVec2("uFullSize", (float)fullWidth, (float)fullHeight);
-    setVec2("uStampSize", (float)(fullWidth * SIMULATION_SCALE), (float)(fullHeight * SIMULATION_SCALE));
-    setVec2("uStampOffset", 0.0f, 0.0f);
-    setVec4("uDirtyRect", (float)dirtyRect.x, (float)dirtyRect.y, (float)dirtyRect.w, (float)dirtyRect.h);
-    setFloat("uDiffusionRate", 0.08f);
-    setFloat("uCapillaryStrength", 0.3f);
-    setFloat("uAbsorption", 0.02f);
-    setFloat("uEvaporation", 0.001f);
-    setFloat("uTimeStep", 0.05f);
+    VkDescriptorImageInfo outputInfo{};
+    outputInfo.imageView = outputView;
+    outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-    // Dispatch entire simulation (physics shader uses dirty rect internally)
-    int workX = (simWidth + 15) / 16;
-    int workY = (simHeight + 15) / 16;
-    glDispatchCompute(workX, workY, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    std::vector<VkWriteDescriptorSet> writes(4);
+    // Binding 0: sampler
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = descSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &stampInfo;
+
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = descSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &capillaryInfo;
+
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = descSet;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[2].pImageInfo = &inputInfo;
+
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = descSet;
+    writes[3].dstBinding = 3;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[3].pImageInfo = &outputInfo;
+
+    vkUpdateDescriptorSets(engine.getDevice(), writes.size(), writes.data(), 0, nullptr);
+
+    // Push constants for physics
+    struct PhysicsPush {
+        float dirtyRect[4];
+        float simSize[2];
+        float fullSize[2];
+        float stampSize[2];
+        float stampOffset[2];
+        float diffusionRate;
+        float capillaryStrength;
+        float absorption;
+        float evaporation;
+        float timeStep;
+        uint32_t iteration;
+    } pc;
+    pc.dirtyRect[0] = dirtyRect.x;
+    pc.dirtyRect[1] = dirtyRect.y;
+    pc.dirtyRect[2] = dirtyRect.w;
+    pc.dirtyRect[3] = dirtyRect.h;
+    pc.simSize[0] = simWidth;
+    pc.simSize[1] = simHeight;
+    pc.fullSize[0] = fullWidth;
+    pc.fullSize[1] = fullHeight;
+    pc.stampSize[0] = (float)(fullWidth * SIMULATION_SCALE);
+    pc.stampSize[1] = (float)(fullHeight * SIMULATION_SCALE);
+    pc.stampOffset[0] = 0.0f;
+    pc.stampOffset[1] = 0.0f;
+    pc.diffusionRate = 0.08f;
+    pc.capillaryStrength = 0.3f;
+    pc.absorption = 0.02f;
+    pc.evaporation = 0.001f;
+    pc.timeStep = 0.05f;
+    pc.iteration = 0; // first pass
+
+    // Dispatch
+    engine.dispatchCompute(shaderModule, {descSet}, &pc, sizeof(pc),
+                          (simWidth + 15) / 16, (simHeight + 15) / 16, 1);
 
     // Swap for next iteration
     useTextureA = !useTextureA;
+
+    // Free descriptor set? We'll reuse next time; we can cache it.
+    // For simplicity, we'll allocate each time; we can improve later.
+    // vkFreeDescriptorSets(engine.getDevice(), engine.getDescriptorPool(), 1, &descSet);
+    // Actually, we need to free to avoid leaks. We'll store it in a static map and reuse.
+    // We'll just assign to physicsDescSet and reuse; we'll free on shutdown.
+    if (physicsDescSet != VK_NULL_HANDLE) {
+        vkFreeDescriptorSets(engine.getDevice(), engine.getDescriptorPool(), 1, &physicsDescSet);
+    }
+    physicsDescSet = descSet; // store for later reuse
 }
 
 void runComposite() {
-    // Get the pre‑compiled composite program
-    GLuint program = getCompositeProgram();
-    if (!program) return;
+    VkShaderModule shaderModule = getCompositeShaderModule();
+    if (!shaderModule) return;
 
-    GLuint inkTex = useTextureA ? inkTextureA : inkTextureB;
+    // Choose current ink texture (the one that was just written)
+    VkImageView inkView = useTextureA ? inkViewB : inkViewA; // because we swapped after physics
 
-    glUseProgram(program);
+    // Create descriptor set for composite:
+    // binding 0: paper sampler
+    // binding 1: ink sampler
+    // binding 2: output storage image
+    VkDescriptorSet descSet;
+    VkDescriptorSetAllocateInfo alloc = {};
+    alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc.descriptorPool = engine.getDescriptorPool();
+    alloc.descriptorSetCount = 1;
+    alloc.pSetLayouts = &engine.getDescriptorSetLayout();
+    if (vkAllocateDescriptorSets(engine.getDevice(), &alloc, &descSet) != VK_SUCCESS) {
+        return;
+    }
 
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, paperTexture);
-    glUniform1i(glGetUniformLocation(program, "uPaperTexture"), 0);
+    VkDescriptorImageInfo paperInfo{};
+    paperInfo.imageView = paperView;
+    paperInfo.sampler = engine.getDefaultSampler();
+    paperInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, inkTex);
-    glUniform1i(glGetUniformLocation(program, "uInkTexture"), 1);
+    VkDescriptorImageInfo inkInfo{};
+    inkInfo.imageView = inkView;
+    inkInfo.sampler = engine.getDefaultSampler();
+    inkInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    glBindImageTexture(0, outputTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+    VkDescriptorImageInfo outputInfo{};
+    outputInfo.imageView = outputView;
+    outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-    glUniform2f(glGetUniformLocation(program, "uFullSize"), (float)fullWidth, (float)fullHeight);
-    glUniform2f(glGetUniformLocation(program, "uSimSize"), (float)simWidth, (float)simHeight);
+    std::vector<VkWriteDescriptorSet> writes(3);
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = descSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &paperInfo;
 
-    int workX = (fullWidth + 15) / 16;
-    int workY = (fullHeight + 15) / 16;
-    glDispatchCompute(workX, workY, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = descSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &inkInfo;
+
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = descSet;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[2].pImageInfo = &outputInfo;
+
+    vkUpdateDescriptorSets(engine.getDevice(), writes.size(), writes.data(), 0, nullptr);
+
+    // Push constants for composite
+    struct CompositePush {
+        float fullSize[2];
+        float simSize[2];
+    } pc;
+    pc.fullSize[0] = fullWidth;
+    pc.fullSize[1] = fullHeight;
+    pc.simSize[0] = simWidth;
+    pc.simSize[1] = simHeight;
+
+    engine.dispatchCompute(shaderModule, {descSet}, &pc, sizeof(pc),
+                          (fullWidth + 15) / 16, (fullHeight + 15) / 16, 1);
+
+    // Cache descriptor set
+    if (compositeDescSet != VK_NULL_HANDLE) {
+        vkFreeDescriptorSets(engine.getDevice(), engine.getDescriptorPool(), 1, &compositeDescSet);
+    }
+    compositeDescSet = descSet;
 }
 
 void readBackToBitmap(void* paperPixels) {
-    GLuint fbo;
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outputTexture, 0);
-    glReadPixels(0, 0, fullWidth, fullHeight, GL_RGBA, GL_UNSIGNED_BYTE, paperPixels);
-    glDeleteFramebuffers(1, &fbo);
+    engine.copyImageToHost(outputImage, paperPixels, fullWidth, fullHeight, VK_FORMAT_R8G8B8A8_UNORM);
 }
 
-GLuint uploadStampTexture(void* pixels, int width, int height) {
-    GLuint tex;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    return tex;
+VkImage uploadStampTexture(void* pixels, int width, int height, VkImageView& outView) {
+    VkImage image = engine.createImage(width, height, VK_FORMAT_R8G8B8A8_UNORM,
+                                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    if (!image) return VK_NULL_HANDLE;
+    if (!engine.allocateImageMemory(image, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+        engine.destroyImage(image);
+        return VK_NULL_HANDLE;
+    }
+
+    if (!engine.uploadImageData(image, pixels, width, height, VK_FORMAT_R8G8B8A8_UNORM)) {
+        engine.destroyImage(image);
+        return VK_NULL_HANDLE;
+    }
+
+    outView = engine.createImageView(image, VK_FORMAT_R8G8B8A8_UNORM);
+    if (!outView) {
+        engine.destroyImage(image);
+        return VK_NULL_HANDLE;
+    }
+    return image;
 }

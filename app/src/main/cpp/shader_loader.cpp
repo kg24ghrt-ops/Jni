@@ -4,86 +4,109 @@
 #include <cstring>
 
 static AAssetManager* g_assetManager = nullptr;
-static VkDevice g_device = VK_NULL_HANDLE;
 
 void initShaderLoader(AAssetManager* mgr) {
     g_assetManager = mgr;
 }
 
-void setVulkanDevice(VkDevice device) {
-    g_device = device;
-}
-
 // --------------------------------------------------------------
-// Load a shader module from an asset path
+// Load a shader from an asset path (e.g., "shaders/paper_generation.spv")
 // --------------------------------------------------------------
-static VkShaderModule loadShaderModuleFromAsset(const char* assetPath) {
-    if (!g_assetManager || !g_device) {
-        return VK_NULL_HANDLE;
-    }
+static GLuint loadShaderFromAsset(const char* assetPath) {
+    if (!g_assetManager) return 0;
 
     AAsset* asset = AAssetManager_open(g_assetManager, assetPath, AASSET_MODE_BUFFER);
-    if (!asset) {
-        return VK_NULL_HANDLE;
-    }
+    if (!asset) return 0;
 
     size_t size = AAsset_getLength(asset);
-    const uint32_t* data = (const uint32_t*)AAsset_getBuffer(asset);
+    const void* data = AAsset_getBuffer(asset);
     if (!data) {
         AAsset_close(asset);
-        return VK_NULL_HANDLE;
+        return 0;
     }
 
-    VkShaderModuleCreateInfo createInfo{};
-    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    createInfo.codeSize = size;
-    createInfo.pCode = data;
+    GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+    if (!shader) {
+        AAsset_close(asset);
+        return 0;
+    }
 
-    VkShaderModule module = VK_NULL_HANDLE;
-    VkResult result = vkCreateShaderModule(g_device, &createInfo, nullptr, &module);
+    // Load SPIR‑V binary (OpenGL ES 3.1+ supports this)
+    glShaderBinary(1, &shader, GL_SHADER_BINARY_FORMAT_SPIR_V, data, size);
+    if (glGetError() != GL_NO_ERROR) {
+        glDeleteShader(shader);
+        AAsset_close(asset);
+        return 0;
+    }
+
+    // Specialize the shader (entry point "main")
+    glSpecializeShader(shader, "main", 0, nullptr, nullptr);
+    if (glGetError() != GL_NO_ERROR) {
+        glDeleteShader(shader);
+        AAsset_close(asset);
+        return 0;
+    }
 
     AAsset_close(asset);
-
-    if (result != VK_SUCCESS) {
-        return VK_NULL_HANDLE;
-    }
-
-    return module;
+    return shader;
 }
 
 // --------------------------------------------------------------
-// Cached shader modules (load once and reuse)
-// These function names match what native-lib.cpp and ink_engine.cpp call
+// Create a program from a shader asset
+// --------------------------------------------------------------
+static GLuint createProgramFromAsset(const char* assetPath) {
+    GLuint shader = loadShaderFromAsset(assetPath);
+    if (!shader) return 0;
+
+    GLuint program = glCreateProgram();
+    glAttachShader(program, shader);
+    glLinkProgram(program);
+
+    GLint status;
+    glGetProgramiv(program, GL_LINK_STATUS, &status);
+    if (!status) {
+        char log[512];
+        glGetProgramInfoLog(program, sizeof(log), nullptr, log);
+        glDeleteProgram(program);
+        glDeleteShader(shader);
+        return 0;
+    }
+    glDeleteShader(shader);
+    return program;
+}
+
+// --------------------------------------------------------------
+// Cached programs (load once and reuse)
 // --------------------------------------------------------------
 
-VkShaderModule getPaperProgram() {
-    static VkShaderModule module = VK_NULL_HANDLE;
-    if (!module) {
-        module = loadShaderModuleFromAsset("shaders/paper_generation.spv");
+GLuint getCapillaryProgram() {
+    static GLuint program = 0;
+    if (!program) {
+        program = createProgramFromAsset("shaders/capillary_map.spv");
     }
-    return module;
+    return program;
 }
 
-VkShaderModule getCapillaryProgram() {
-    static VkShaderModule module = VK_NULL_HANDLE;
-    if (!module) {
-        module = loadShaderModuleFromAsset("shaders/capillary_map.spv");
+GLuint getPhysicsProgram() {
+    static GLuint program = 0;
+    if (!program) {
+        program = createProgramFromAsset("shaders/ink_physics.spv");
     }
-    return module;
+    return program;
 }
 
-VkShaderModule getPhysicsProgram() {
-    static VkShaderModule module = VK_NULL_HANDLE;
-    if (!module) {
-        module = loadShaderModuleFromAsset("shaders/ink_physics.spv");
+GLuint getCompositeProgram() {
+    static GLuint program = 0;
+    if (!program) {
+        program = createProgramFromAsset("shaders/ink_composite.spv");
     }
-    return module;
+    return program;
 }
 
-VkShaderModule getCompositeProgram() {
-    static VkShaderModule module = VK_NULL_HANDLE;
-    if (!module) {
-        module = loadShaderModuleFromAsset("shaders/ink_composite.spv");
+GLuint getPaperProgram() {
+    static GLuint program = 0;
+    if (!program) {
+        program = createProgramFromAsset("shaders/paper_generation.spv");
     }
-    return module;
+    return program;
 }
