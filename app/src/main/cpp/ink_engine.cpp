@@ -66,6 +66,11 @@ Java_com_example_homecil_PaperRenderer_simulateInk(
         jint offsetX,
         jint offsetY) {
 
+    // 0. Ensure the Vulkan engine is initialized – this is critical
+    if (!engine.initialize()) {
+        return;  // can't do anything without Vulkan
+    }
+
     // 1. Lock bitmaps
     AndroidBitmapInfo paperInfo, inkInfo;
     void *paperPixels, *inkPixels;
@@ -194,10 +199,6 @@ bool ensureResources() {
         return false;
 
     // Create descriptor set layout for physics (4 bindings)
-    // binding 0: combined image sampler (stamp)
-    // binding 1: combined image sampler (capillary)
-    // binding 2: storage image (input ink)
-    // binding 3: storage image (output ink)
     VkDescriptorSetLayoutBinding physicsBindings[4] = {};
     physicsBindings[0].binding = 0;
     physicsBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -227,9 +228,6 @@ bool ensureResources() {
         return false;
 
     // Create descriptor set layout for composite (3 bindings)
-    // binding 0: combined image sampler (paper)
-    // binding 1: combined image sampler (ink)
-    // binding 2: storage image (output)
     VkDescriptorSetLayoutBinding compositeBindings[3] = {};
     compositeBindings[0].binding = 0;
     compositeBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -300,11 +298,9 @@ void runPhysicsSimulation(VkImage stampImage, VkImageView stampView) {
     VkShaderModule shaderModule = getPhysicsShaderModule();
     if (!shaderModule) return;
 
-    // Choose input/output ink images
     VkImageView inputView = useTextureA ? inkViewA : inkViewB;
     VkImageView outputView = useTextureA ? inkViewB : inkViewA;
 
-    // Allocate descriptor set using the physics layout
     VkDescriptorSet descSet;
     VkDescriptorSetAllocateInfo alloc{};
     alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -327,7 +323,7 @@ void runPhysicsSimulation(VkImage stampImage, VkImageView stampView) {
 
     VkDescriptorImageInfo inputInfo{};
     inputInfo.imageView = inputView;
-    inputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL; // storage image
+    inputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkDescriptorImageInfo outputInfo{};
     outputInfo.imageView = outputView;
@@ -411,7 +407,7 @@ void runComposite() {
     VkShaderModule shaderModule = getCompositeShaderModule();
     if (!shaderModule) return;
 
-    VkImageView inkView = useTextureA ? inkViewB : inkViewA; // after swap
+    VkImageView inkView = useTextureA ? inkViewB : inkViewA;
 
     VkDescriptorSet descSet;
     VkDescriptorSetAllocateInfo alloc{};
