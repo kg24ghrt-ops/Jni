@@ -6,6 +6,7 @@ add_library(native-lib SHARED
         ink_engine.cpp
         distort_engine.cpp
         shader_loader.cpp
+        vulkan_compute_engine.cpp   # ← THIS MUST BE INCLUDED
 )
 
 find_library(android-lib android)
