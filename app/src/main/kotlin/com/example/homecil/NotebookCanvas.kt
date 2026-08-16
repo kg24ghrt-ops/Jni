@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
+import androidx.compose.ui.ExperimentalComposeUiApi // <--- ADDED THIS IMPORT
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
@@ -26,12 +27,14 @@ class Stroke {
     val points = mutableListOf<InkPoint>()
 }
 
+// 2. THE FIX: Added @OptIn to allow the experimental pointerInteropFilter API
+@OptIn(ExperimentalComposeUiApi::class) 
 @Composable
 fun NotebookCanvas() {
     val strokes = remember { mutableStateListOf<Stroke>() }
     val currentStroke = remember { mutableStateOf<Stroke?>(null) }
 
-    // 2. AGSL Shader: Procedural Notebook Paper (College Ruled)
+    // 3. AGSL Shader: Procedural Notebook Paper (College Ruled)
     val paperShaderCode = """
         uniform float2 resolution;
         half4 main(float2 fragCoord) {
@@ -58,7 +61,7 @@ fun NotebookCanvas() {
         }
     """
 
-    // 3. Safe Shader Initialization
+    // 4. Safe Shader Initialization
     val paperBrush = remember {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -76,7 +79,7 @@ fun NotebookCanvas() {
         modifier = Modifier
             .fillMaxSize()
             .background(paperBrush)
-            // 4. DMI ENGINE: Use pointerInteropFilter to get raw MotionEvent historical points
+            // 5. DMI ENGINE: Use pointerInteropFilter to get raw MotionEvent historical points
             .pointerInteropFilter { motionEvent ->
                 when (motionEvent.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -113,7 +116,7 @@ fun NotebookCanvas() {
                 }
                 true // Consume the touch/stylus event
             }
-            // 5. RENDERING ENGINE
+            // 6. RENDERING ENGINE
             .drawBehind {
                 strokes.forEach { stroke -> drawStroke(stroke) }
                 currentStroke.value?.let { drawStroke(it) }
@@ -121,7 +124,7 @@ fun NotebookCanvas() {
     )
 }
 
-// 6. Realistic Ink Physics
+// 7. Realistic Ink Physics
 fun DrawScope.drawStroke(stroke: Stroke) {
     if (stroke.points.size < 2) return
 
