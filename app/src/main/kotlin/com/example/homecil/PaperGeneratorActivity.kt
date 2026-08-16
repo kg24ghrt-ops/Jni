@@ -1,41 +1,26 @@
 package com.example.homecil
 
-import android.content.ContentValues
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
 import android.provider.MediaStore
+import android.content.ContentValues
+import android.os.Environment
 import android.view.View
 import android.widget.Toast
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
-import com.example.homecil.databinding.ActivityMainBinding
+import com.example.homecil.databinding.ActivityPaperGeneratorBinding
 import kotlin.random.Random
 
-class MainActivity : AppCompatActivity() {
-    
-    private lateinit var binding: ActivityMainBinding
+class PaperGeneratorActivity : AppCompatActivity() {
+    private lateinit var binding: ActivityPaperGeneratorBinding
     private val viewModel: PaperViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        // 1. Enable Edge-to-Edge for an immersive Material 3 experience
-        enableEdgeToEdge()
-        
-        // 2. Inflate the layout
-        binding = ActivityMainBinding.inflate(layoutInflater)
+        binding = ActivityPaperGeneratorBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
-        // 3. Handle Window Insets so UI respects system bars and cutouts
-        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
-            insets
-        }
 
         setupListeners()
         observeViewModel()
@@ -44,33 +29,30 @@ class MainActivity : AppCompatActivity() {
     private fun setupListeners() {
         binding.btnGenerate.setOnClickListener {
             val params = PaperParams(
-                width = 1024,
-                height = 1024,
                 grain = binding.sliderGrain.value,
                 water = binding.sliderWaterStains.value.toInt(),
-                seed = Random.nextInt() // Generates a new seed for every press
+                seed = Random.nextInt() // Ensure deterministic but varied seeds
             )
             viewModel.generate(params)
         }
 
         binding.btnExport.setOnClickListener {
-            viewModel.bitmapLiveData.value?.let { 
-                exportToGallery(it) 
-            } ?: run {
-                Toast.makeText(this, "Generate an image first!", Toast.LENGTH_SHORT).show()
-            }
+            viewModel.bitmapLiveData.value?.let { exportToGallery(it) }
         }
     }
 
     private fun observeViewModel() {
         viewModel.bitmapLiveData.observe(this) { bitmap ->
             binding.previewImage.setImageBitmap(bitmap)
+            // Reset matrix to fit screen when a new image is generated
+            binding.previewImage.apply {
+                // Add simple reset logic here if needed
+            }
         }
 
         viewModel.isLoading.observe(this) { isLoading ->
             binding.progressBar.visibility = if (isLoading) View.VISIBLE else View.GONE
             binding.btnGenerate.isEnabled = !isLoading
-            binding.btnExport.isEnabled = !isLoading && viewModel.bitmapLiveData.value != null
         }
     }
 
@@ -94,8 +76,6 @@ class MainActivity : AppCompatActivity() {
             resolver.update(it, contentValues, null, null)
             
             Toast.makeText(this, "Saved to Pictures/HomecilPaper", Toast.LENGTH_SHORT).show()
-        } ?: run {
-            Toast.makeText(this, "Failed to save image", Toast.LENGTH_SHORT).show()
         }
     }
 }

@@ -1,22 +1,13 @@
 cmake_minimum_required(VERSION 3.18.1)
-project("homecil_native")
+project("paper_jni")
 
-add_library(native-lib SHARED
-        native-lib.cpp
-        ink_engine.cpp
-        distort_engine.cpp
-        shader_loader.cpp
-        vulkan_compute_engine.cpp   # ← THIS MUST BE INCLUDED
-)
+# 1. Import the pre-built Rust library
+add_library(paper_engine SHARED IMPORTED)
+set_target_properties(paper_engine PROPERTIES IMPORTED_LOCATION
+    ${CMAKE_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libpaper_engine.so)
 
-find_library(android-lib android)
-find_library(log-lib log)
-find_library(jnigraphics-lib jnigraphics)
-find_library(vulkan-lib vulkan)
+# 2. Build the JNI bridge
+add_library(paper_jni SHARED paper_jni.cpp)
 
-target_link_libraries(native-lib
-        ${android-lib}
-        ${log-lib}
-        ${jnigraphics-lib}
-        ${vulkan-lib}
-)
+# 3. Link them together with Android and Log libraries
+target_link_libraries(paper_jni paper_engine android log)
