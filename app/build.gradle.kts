@@ -25,13 +25,7 @@ android {
             glslcArgs += listOf("-c", "-g")
         }
 
-        externalNativeBuild {
-            cmake {
-                cppFlags += "-std=c++20"
-                arguments += "-DANDROID_STL=c++_shared"
-                abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-            }
-        }
+        
     }
 
     buildTypes {
