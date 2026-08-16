@@ -15,10 +15,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.requiredHeight
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -29,6 +30,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,13 +54,9 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 enum class PaperSize(val widthDp: Dp, val heightDp: Dp, val label: String, val exportW: Int, val exportH: Int) {
-    A4(1323.dp, 1871.dp, "A4", 2480, 3508), // Standard 300 DPI
+    A4(1323.dp, 1871.dp, "A4", 2480, 3508),
     A5(932.dp, 1323.dp, "A5", 1748, 2480)
 }
 
@@ -73,16 +71,18 @@ fun NotebookCanvas() {
     var currentPaperSize by remember { mutableStateOf(PaperSize.A4) }
     var currentPen by remember { mutableStateOf(PenType.BALLPOINT) }
     var text by remember { mutableStateOf("") }
-    
-    var scale by remember { mutableStateOf(0.35f) } 
-    var offset by remember { mutableStateOf(Offset.Zero) }
+
+    // FIX 2: base (fit) scale + user zoom/pan on top. -1 = "not fitted yet"
+    var baseScale by remember { mutableStateOf(-1f) }
+    var userScale by remember { mutableStateOf(1f) }
+    var userOffset by remember { mutableStateOf(Offset.Zero) }
     var isPanMode by remember { mutableStateOf(false) }
-    
+
     val scrollState = rememberScrollState()
 
-    val lineSpacing = 50.dp 
-    val marginX = 220.dp    
-    
+    val lineSpacing = 50.dp
+    val marginX = 220.dp
+
     val paperColor = Color(0xFFFBF9F2)
     val lineColor = Color(0xFFA9C2D9)
     val marginColor = Color(0xFFE57373)
@@ -91,38 +91,51 @@ fun NotebookCanvas() {
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
 
-    // PROCEDURAL PAPER GRAIN ENGINE (Capped to prevent GPU texture limit crashes)
+    // FIX 3: cap the LONGEST edge so BOTH dims stay <= 4096 (GLES texture limit)
     val paperTexture = remember(currentPaperSize, density) {
-        val screenW = with(density) { currentPaperSize.widthDp.roundToPx() }
-        val screenH = with(density) { currentPaperSize.heightDp.roundToPx() }
-        
-        val maxTexture = 4096 // Safe limit for OpenGL ES texture size
-        val aspect = screenW.toFloat() / screenH.toFloat()
-        val bmpW = if (screenW > maxTexture) maxTexture else screenW
-        val bmpH = if (screenW > maxTexture) (maxTexture / aspect).toInt() else screenH
-        
+        val wPx = with(density) { currentPaperSize.widthDp.roundToPx() }
+        val hPx = with(density) { currentPaperSize.heightDp.roundToPx() }
+
+        val maxTexture = 4096
+        val texScale = minOf(1f, maxTexture.toFloat() / maxOf(wPx, hPx))
+        val bmpW = (wPx * texScale).toInt()
+        val bmpH = (hPx * texScale).toInt()
+
         val bmp = ImageBitmap(bmpW, bmpH)
         val nativeCanvas = android.graphics.Canvas(bmp.asAndroidBitmap())
-        
         nativeCanvas.drawColor(paperColor.toArgb())
+
         val random = java.util.Random(123)
         val fiberPaint = Paint().apply { color = android.graphics.Color.argb(25, 100, 80, 60); strokeWidth = 0.8f; isAntiAlias = true }
-        
         val fiberCount = (bmpW * bmpH / 1000).coerceAtMost(10000)
         for (i in 0 until fiberCount) {
             val x1 = random.nextFloat() * bmpW
             val y1 = random.nextFloat() * bmpH
             val angle = random.nextFloat() * Math.PI
             val len = random.nextFloat() * 6f + 2f
-            val x2 = x1 + (len * Math.cos(angle)).toFloat()
-            val y2 = y1 + (len * Math.sin(angle)).toFloat()
-            nativeCanvas.drawLine(x1, y1, x2, y2, fiberPaint)
+            nativeCanvas.drawLine(x1, y1, x1 + (len * Math.cos(angle)).toFloat(), y1 + (len * Math.sin(angle)).toFloat(), fiberPaint)
         }
         bmp
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color(0xFFD7CCC8))) {
-        
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color(0xFFD7CCC8))) {
+
+        // FIX 2: compute the scale that actually fits the sheet on this screen
+        val paperWpx = with(density) { currentPaperSize.widthDp.toPx() }
+        val paperHpx = with(density) { currentPaperSize.heightDp.toPx() }
+        val fitScale = minOf(
+            (constraints.maxWidth * 0.92f) / paperWpx,
+            (constraints.maxHeight * 0.92f) / paperHpx
+        )
+        val totalScale = (if (baseScale < 0f) fitScale else baseScale) * userScale
+
+        // Re-fit whenever paper size or screen changes
+        LaunchedEffect(currentPaperSize, constraints.maxWidth, constraints.maxHeight) {
+            baseScale = fitScale
+            userScale = 1f
+            userOffset = Offset.Zero
+        }
+
         // THE INTERACTIVE DESK
         Box(
             modifier = Modifier
@@ -130,31 +143,33 @@ fun NotebookCanvas() {
                 .pointerInput(isPanMode) {
                     if (isPanMode) {
                         detectTransformGestures { _, pan, zoom, _ ->
-                            scale = (scale * zoom).coerceIn(0.1f, 10.0f)
-                            offset += pan
+                            userScale = (userScale * zoom).coerceIn(0.1f, 10f)
+                            userOffset += pan
                         }
                     }
                 }
         ) {
-            // THE GINORMOUS PAPER SHEET
+            // THE PAPER SHEET
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = offset.x
-                        translationY = offset.y
+                        scaleX = totalScale
+                        scaleY = totalScale
+                        translationX = userOffset.x
+                        translationY = userOffset.y
                     }
-                    .width(currentPaperSize.widthDp)
-                    .height(currentPaperSize.heightDp)
-                    .shadow(elevation = 12.dp, spotColor = Color.Black) 
+                    // FIX 1: required* bypasses parent clamping so the sheet is
+                    // laid out at its TRUE 1323x1871 dp size, then visually scaled.
+                    .requiredWidth(currentPaperSize.widthDp)
+                    .requiredHeight(currentPaperSize.heightDp)
+                    .shadow(elevation = 12.dp, spotColor = Color.Black)
                     .background(paperColor)
             ) {
-                // 1. Grain Texture
+                // 1. Grain texture
                 Image(bitmap = paperTexture, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
 
-                // 2. Ruled Lines (Drawn UNDER text, no Offscreen compositing needed!)
+                // 2. Ruled lines
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val lineSpacingPx = lineSpacing.toPx()
                     val marginXPx = marginX.toPx()
@@ -166,29 +181,29 @@ fun NotebookCanvas() {
                     drawLine(marginColor, Offset(marginXPx, 0f), Offset(marginXPx, size.height), 3f)
                 }
 
-                // 3. Text (Ink) - ON TOP. The 0xDD alpha allows lines to show through naturally.
+                // 3. Ink on top
                 BasicTextField(
                     value = text,
                     onValueChange = { if (!isPanMode) text = it },
                     enabled = !isPanMode,
                     textStyle = TextStyle(
                         fontFamily = FontFamily.Cursive,
-                        fontSize = 36.sp, 
-                        lineHeight = lineSpacing.value.sp,
+                        // FIX 4: define ink metrics in dp-space so text stays glued
+                        // to the rules regardless of system font scaling
+                        fontSize = with(density) { 36.dp.toPx().toSp() },
+                        lineHeight = with(density) { lineSpacing.toPx().toSp() },
                         color = currentPen.color
                     ),
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(start = marginX + 12.dp, top = 12.dp, end = 24.dp, bottom = 24.dp)
-                        .then(
-                            if (!isPanMode) Modifier.verticalScroll(scrollState) else Modifier
-                        )
-                        .blur(currentPen.blur) 
+                        .then(if (!isPanMode) Modifier.verticalScroll(scrollState) else Modifier)
+                        .blur(currentPen.blur)
                 )
             }
         }
 
-        // BOTTOM SCROLLABLE TOOLBAR
+        // BOTTOM TOOLBAR (unchanged behavior)
         LazyRow(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -199,12 +214,12 @@ fun NotebookCanvas() {
         ) {
             items(PaperSize.entries) { size ->
                 Button(
-                    onClick = { currentPaperSize = size },
+                    onClick = { currentPaperSize = size }, // LaunchedEffect re-fits automatically
                     colors = ButtonDefaults.buttonColors(if (currentPaperSize == size) Color(0xFF1A237E) else Color(0xFF424242)),
                     modifier = Modifier.padding(end = 8.dp)
                 ) { Text(size.label, color = Color.White) }
             }
-            
+
             items(PenType.entries) { pen ->
                 Button(
                     onClick = { currentPen = pen },
@@ -228,48 +243,55 @@ fun NotebookCanvas() {
                             try {
                                 val w = currentPaperSize.exportW
                                 val h = currentPaperSize.exportH
-                                
+
                                 val exportBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                                 val exportCanvas = android.graphics.Canvas(exportBitmap)
-                                exportCanvas.drawColor(paperColor.toArgb())
-                                
+
                                 val grainRect = Rect(0, 0, paperTexture.width, paperTexture.height)
-                                val destRect = Rect(0, 0, w, h)
-                                exportCanvas.drawBitmap(paperTexture.asAndroidBitmap(), grainRect, destRect, null)
-                                
+                                exportCanvas.drawBitmap(paperTexture.asAndroidBitmap(), grainRect, Rect(0, 0, w, h), null)
+
                                 val scaleW = w.toFloat() / with(density) { currentPaperSize.widthDp.toPx() }
                                 val scaleH = h.toFloat() / with(density) { currentPaperSize.heightDp.toPx() }
-                                
+
                                 val linePaint = Paint().apply { color = lineColor.toArgb(); strokeWidth = 2f * scaleH; isAntiAlias = true }
                                 val marginXPx = with(density) { marginX.toPx() } * scaleW
                                 val lineSpacingPx = with(density) { lineSpacing.toPx() } * scaleH
-                                
+
                                 var y = lineSpacingPx
                                 while (y < h) { exportCanvas.drawLine(0f, y, w.toFloat(), y, linePaint); y += lineSpacingPx }
                                 exportCanvas.drawLine(marginXPx, 0f, marginXPx, h.toFloat(), Paint().apply { color = marginColor.toArgb(); strokeWidth = 3f * scaleW; isAntiAlias = true })
-                                
-                                val textPaint = TextPaint().apply { 
+
+                                val textPaint = TextPaint().apply {
                                     color = currentPen.color.toArgb()
-                                    textSize = with(density) { 36.sp.toPx() } * scaleH 
+                                    // Match on-screen ink: 36dp in paper-space, scaled to export
+                                    textSize = with(density) { 36.dp.toPx() } * scaleH
                                     typeface = Typeface.create("cursive", currentPen.typefaceStyle)
-                                    isAntiAlias = true 
+                                    isAntiAlias = true
                                 }
+
+                                // FIX 5: force StaticLayout line advance to equal rule spacing,
+                                // otherwise exported ink drifts off the rules
+                                val fm = textPaint.fontMetrics
+                                val extraSpacing = lineSpacingPx - (fm.descent - fm.ascent)
+
                                 val textWidth = w - marginXPx.toInt() - (with(density) { 24.dp.toPx() } * scaleW).toInt()
-                                val layout = StaticLayout.Builder.obtain(text, 0, text.length, textPaint, textWidth).build()
-                                
+                                val layout = StaticLayout.Builder.obtain(text, 0, text.length, textPaint, textWidth)
+                                    .setLineSpacing(extraSpacing, 1f)
+                                    .build()
+
                                 exportCanvas.save()
-                                exportCanvas.translate(marginXPx + (with(density) { 12.dp.toPx() } * scaleW), with(density) { 12.dp.toPx() } * scaleH)
+                                exportCanvas.translate(marginXPx + with(density) { 12.dp.toPx() } * scaleW, with(density) { 12.dp.toPx() } * scaleH)
                                 layout.draw(exportCanvas)
                                 exportCanvas.restore()
-                                
-                                val contentValues = ContentValues().apply { 
+
+                                val contentValues = ContentValues().apply {
                                     put(MediaStore.MediaColumns.DISPLAY_NAME, "Homework_${System.currentTimeMillis()}.png")
                                     put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
-                                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/HomeCil") 
+                                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/HomeCil")
                                 }
                                 val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
                                 uri?.let { context.contentResolver.openOutputStream(it)?.use { stream -> exportBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream) } }
-                                
+
                                 withContext(Dispatchers.Main) { Toast.makeText(context, "Saved to Pictures/HomeCil!", Toast.LENGTH_SHORT).show() }
                             } catch (e: Exception) {
                                 withContext(Dispatchers.Main) { Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show() }
