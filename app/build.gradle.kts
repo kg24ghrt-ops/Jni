@@ -9,22 +9,14 @@ android {
 
     defaultConfig {
         applicationId = "com.example.homecil"
-        minSdk = 31
+        minSdk = 31 // Min SDK 31 is good, but AGSL natively shines on API 33+
         targetSdk = 36
         versionCode = 2
         versionName = "1.0.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // --------------------------------------------------------------
-        // OFFICIAL SHADER COMPILATION BLOCK
-        // --------------------------------------------------------------
-        // Android Studio will compile all .comp files in src/main/shaders/
-        // and place the resulting .spv files in assets/shaders/
         shaders {
-            // Global glslc arguments (applies to all shaders)
             glslcArgs += listOf("-c", "-g")
-            // Scoped arguments for specific directories (optional)
-            // glslcScopedArgs("some_folder", "-DSOME_DEFINE=1")
         }
 
         externalNativeBuild {
@@ -62,7 +54,10 @@ android {
         jvmTarget = "17"
     }
     buildFeatures {
-        viewBinding = true
+        compose = true // Switched from viewBinding for modern 2D rendering
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.14" // Standard for Kotlin 1.9.x
     }
     packaging {
         resources {
@@ -72,15 +67,39 @@ android {
 }
 
 dependencies {
-    implementation("ru.noties:jlatexmath-android:0.2.0")
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("com.google.android.material:material:1.12.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-    implementation("androidx.activity:activity-ktx:1.9.2")
+    // Latest 2026 Compose BOM
+    val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
+    implementation(composeBom)
+    androidTestImplementation(composeBom)
+
+    // Core & Lifecycle
+    implementation("androidx.core:core-ktx:1.18.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.5")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.5")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5")
+    implementation("androidx.activity:activity-compose:1.9.2")
+
+    // Jetpack Compose UI & Material 3
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+
+    // Jetpack Ink API (The core physics & stroke engine)
+    implementation("androidx.ink:ink-brush:1.1.0-alpha05")
+    implementation("androidx.ink:ink-authoring-compose-android:1.1.0-alpha02")
+
+    // Advanced Graphics & Paths (For vector stroke manipulation)
+    implementation("androidx.graphics:graphics-path:1.1.0")
+
+    // Math rendering (kept from your file)
+    implementation("ru.noties:jlatexmath-android:0.2.0")
+
+    // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

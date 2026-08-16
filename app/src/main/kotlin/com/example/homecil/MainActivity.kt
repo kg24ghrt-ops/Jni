@@ -1,101 +1,24 @@
 package com.example.homecil
 
-import android.content.ContentValues
-import android.graphics.Bitmap
 import android.os.Bundle
-import android.os.Environment
-import android.provider.MediaStore
-import android.view.View
-import android.widget.Toast
-import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
-import com.example.homecil.databinding.ActivityMainBinding
-import kotlin.random.Random
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.Modifier
+import androidx.core.view.WindowCompat
 
-class MainActivity : AppCompatActivity() {
-    
-    private lateinit var binding: ActivityMainBinding
-    private val viewModel: PaperViewModel by viewModels()
-
+class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        // 1. Enable Edge-to-Edge for an immersive Material 3 experience
-        enableEdgeToEdge()
-        
-        // 2. Inflate the layout
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
-
-        // 3. Handle Window Insets so UI respects system bars and cutouts
-        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
-            insets
-        }
-
-        setupListeners()
-        observeViewModel()
-    }
-
-    private fun setupListeners() {
-        binding.btnGenerate.setOnClickListener {
-            val params = PaperParams(
-                width = 1024,
-                height = 1024,
-                grain = binding.sliderGrain.value,
-                water = binding.sliderWaterStains.value.toInt(),
-                seed = Random.nextInt() // Generates a new seed for every press
-            )
-            viewModel.generate(params)
-        }
-
-        binding.btnExport.setOnClickListener {
-            viewModel.bitmapLiveData.value?.let { 
-                exportToGallery(it) 
-            } ?: run {
-                Toast.makeText(this, "Generate an image first!", Toast.LENGTH_SHORT).show()
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        setContent {
+            MaterialTheme {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    NotebookCanvas()
+                }
             }
-        }
-    }
-
-    private fun observeViewModel() {
-        viewModel.bitmapLiveData.observe(this) { bitmap ->
-            binding.previewImage.setImageBitmap(bitmap)
-        }
-
-        viewModel.isLoading.observe(this) { isLoading ->
-            binding.progressBar.visibility = if (isLoading) View.VISIBLE else View.GONE
-            binding.btnGenerate.isEnabled = !isLoading
-            binding.btnExport.isEnabled = !isLoading && viewModel.bitmapLiveData.value != null
-        }
-    }
-
-    private fun exportToGallery(bitmap: Bitmap) {
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "Paper_${System.currentTimeMillis()}.png")
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/HomecilPaper")
-            put(MediaStore.MediaColumns.IS_PENDING, 1)
-        }
-
-        val resolver = contentResolver
-        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-
-        uri?.let {
-            resolver.openOutputStream(it)?.use { outputStream ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
-            }
-            contentValues.clear()
-            contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
-            resolver.update(it, contentValues, null, null)
-            
-            Toast.makeText(this, "Saved to Pictures/HomecilPaper", Toast.LENGTH_SHORT).show()
-        } ?: run {
-            Toast.makeText(this, "Failed to save image", Toast.LENGTH_SHORT).show()
         }
     }
 }
