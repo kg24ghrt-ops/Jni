@@ -21,6 +21,40 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.Dp //
+</think>
+
+The compiler error `Unresolved reference 'Dp'` happens because I included the lowercase `dp` extension (for values like `50.dp`) in the imports, but forgot to import the uppercase `Dp` class (the type declaration used in `val widthDp: Dp`). 
+
+Here is the exact, fully corrected `NotebookCanvas.kt` with the missing import added.
+
+### Replace your `NotebookCanvas.kt` completely with this:
+
+```kotlin
+package com.example.homecil
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.Dp // <--- THIS IS THE FIX (Added missing import)
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
