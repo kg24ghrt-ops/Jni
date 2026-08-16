@@ -54,6 +54,10 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+// REQUIRED: These were missing in the previous snippet and caused the compilation error
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class PaperSize(val widthDp: Dp, val heightDp: Dp, val label: String, val exportW: Int, val exportH: Int) {
     A4(1323.dp, 1871.dp, "A4", 2480, 3508),
@@ -72,7 +76,7 @@ fun NotebookCanvas() {
     var currentPen by remember { mutableStateOf(PenType.BALLPOINT) }
     var text by remember { mutableStateOf("") }
 
-    // FIX 2: base (fit) scale + user zoom/pan on top. -1 = "not fitted yet"
+    // base (fit) scale + user zoom/pan on top. -1 = "not fitted yet"
     var baseScale by remember { mutableStateOf(-1f) }
     var userScale by remember { mutableStateOf(1f) }
     var userOffset by remember { mutableStateOf(Offset.Zero) }
@@ -91,7 +95,7 @@ fun NotebookCanvas() {
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
 
-    // FIX 3: cap the LONGEST edge so BOTH dims stay <= 4096 (GLES texture limit)
+    // Cap the LONGEST edge so BOTH dims stay <= 4096 (GLES texture limit)
     val paperTexture = remember(currentPaperSize, density) {
         val wPx = with(density) { currentPaperSize.widthDp.roundToPx() }
         val hPx = with(density) { currentPaperSize.heightDp.roundToPx() }
@@ -120,7 +124,7 @@ fun NotebookCanvas() {
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color(0xFFD7CCC8))) {
 
-        // FIX 2: compute the scale that actually fits the sheet on this screen
+        // Compute the scale that actually fits the sheet on this screen
         val paperWpx = with(density) { currentPaperSize.widthDp.toPx() }
         val paperHpx = with(density) { currentPaperSize.heightDp.toPx() }
         val fitScale = minOf(
@@ -159,8 +163,8 @@ fun NotebookCanvas() {
                         translationX = userOffset.x
                         translationY = userOffset.y
                     }
-                    // FIX 1: required* bypasses parent clamping so the sheet is
-                    // laid out at its TRUE 1323x1871 dp size, then visually scaled.
+                    // required* bypasses parent clamping so the sheet is
+                    // laid out at its TRUE size, then visually scaled.
                     .requiredWidth(currentPaperSize.widthDp)
                     .requiredHeight(currentPaperSize.heightDp)
                     .shadow(elevation = 12.dp, spotColor = Color.Black)
@@ -188,8 +192,6 @@ fun NotebookCanvas() {
                     enabled = !isPanMode,
                     textStyle = TextStyle(
                         fontFamily = FontFamily.Cursive,
-                        // FIX 4: define ink metrics in dp-space so text stays glued
-                        // to the rules regardless of system font scaling
                         fontSize = with(density) { 36.dp.toPx().toSp() },
                         lineHeight = with(density) { lineSpacing.toPx().toSp() },
                         color = currentPen.color
@@ -203,7 +205,7 @@ fun NotebookCanvas() {
             }
         }
 
-        // BOTTOM TOOLBAR (unchanged behavior)
+        // BOTTOM TOOLBAR
         LazyRow(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -212,15 +214,16 @@ fun NotebookCanvas() {
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            items(PaperSize.entries) { size ->
+            // Using .values() ensures compatibility with Kotlin versions older than 1.9
+            items(PaperSize.values()) { size ->
                 Button(
-                    onClick = { currentPaperSize = size }, // LaunchedEffect re-fits automatically
+                    onClick = { currentPaperSize = size },
                     colors = ButtonDefaults.buttonColors(if (currentPaperSize == size) Color(0xFF1A237E) else Color(0xFF424242)),
                     modifier = Modifier.padding(end = 8.dp)
                 ) { Text(size.label, color = Color.White) }
             }
 
-            items(PenType.entries) { pen ->
+            items(PenType.values()) { pen ->
                 Button(
                     onClick = { currentPen = pen },
                     colors = ButtonDefaults.buttonColors(if (currentPen == pen) Color(0xFF00695C) else Color(0xFF424242)),
@@ -263,14 +266,11 @@ fun NotebookCanvas() {
 
                                 val textPaint = TextPaint().apply {
                                     color = currentPen.color.toArgb()
-                                    // Match on-screen ink: 36dp in paper-space, scaled to export
                                     textSize = with(density) { 36.dp.toPx() } * scaleH
                                     typeface = Typeface.create("cursive", currentPen.typefaceStyle)
                                     isAntiAlias = true
                                 }
 
-                                // FIX 5: force StaticLayout line advance to equal rule spacing,
-                                // otherwise exported ink drifts off the rules
                                 val fm = textPaint.fontMetrics
                                 val extraSpacing = lineSpacingPx - (fm.descent - fm.ascent)
 
