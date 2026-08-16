@@ -15,14 +15,14 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -76,7 +76,8 @@ fun NotebookCanvas() {
     var currentPen by remember { mutableStateOf(PenType.BALLPOINT) }
     var text by remember { mutableStateOf("") }
     
-    var scale by remember { mutableStateOf(1f) }
+    // ZOOM & PAN STATE (Starts zoomed out so the whole A4 page fits on mobile)
+    var scale by remember { mutableStateOf(0.35f) } 
     var offset by remember { mutableStateOf(Offset.Zero) }
     var isPanMode by remember { mutableStateOf(false) }
 
@@ -91,8 +92,7 @@ fun NotebookCanvas() {
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
 
-    // 1. PROCEDURAL PAPER GRAIN ENGINE
-    // Draws fibers and mottling once into an ImageBitmap for 60fps performance
+    // PROCEDURAL PAPER GRAIN ENGINE
     val paperTexture = remember(currentPaperSize, density) {
         val w = with(density) { currentPaperSize.widthDp.roundToPx() }
         val h = with(density) { currentPaperSize.heightDp.roundToPx() }
@@ -100,15 +100,9 @@ fun NotebookCanvas() {
         val nativeCanvas = android.graphics.Canvas(bmp.asAndroidBitmap())
         
         nativeCanvas.drawColor(paperColor.toArgb())
-        
         val random = java.util.Random(123)
-        val fiberPaint = Paint().apply {
-            color = android.graphics.Color.argb(25, 100, 80, 60)
-            strokeWidth = 0.8f
-            isAntiAlias = true
-        }
+        val fiberPaint = Paint().apply { color = android.graphics.Color.argb(25, 100, 80, 60); strokeWidth = 0.8f; isAntiAlias = true }
         
-        // Draw 5000 microscopic wood pulp fibers
         for (i in 0 until 5000) {
             val x1 = random.nextFloat() * w
             val y1 = random.nextFloat() * h
@@ -118,182 +112,145 @@ fun NotebookCanvas() {
             val y2 = y1 + (len * Math.sin(angle)).toFloat()
             nativeCanvas.drawLine(x1, y1, x2, y2, fiberPaint)
         }
-        
-        // Draw subtle paper mottling/shadows
-        val mottlePaint = Paint().apply { color = android.graphics.Color.argb(10, 0, 0, 0) }
-        for (i in 0 until 2000) {
-            val x = random.nextFloat() * w
-            val y = random.nextFloat() * h
-            val r = random.nextFloat() * 15f + 5f
-            nativeCanvas.drawCircle(x, y, r, mottlePaint)
-        }
-        
         bmp
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color(0xFFD7CCC8))) {
         
-        // THE PAPER SHEET
+        // THE INTERACTIVE DESK (Captures gestures everywhere, not just on the paper)
         Box(
             modifier = Modifier
-                .align(Alignment.Center)
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                    translationX = offset.x
-                    translationY = offset.y
-                }
+                .fillMaxSize()
                 .pointerInput(isPanMode) {
                     if (isPanMode) {
                         detectTransformGestures { _, pan, zoom, _ ->
-                            scale = (scale * zoom).coerceIn(0.5f, 4.0f)
-                            offset = Offset(offset.x + pan.x, offset.y + pan.y)
+                            scale = (scale * zoom).coerceIn(0.1f, 10.0f)
+                            offset += pan
                         }
                     }
                 }
-                .width(currentPaperSize.widthDp)
-                .height(currentPaperSize.heightDp)
-                .shadow(elevation = 12.dp, spotColor = Color.Black) 
-                .background(paperColor)
         ) {
-            // Layer 1: Paper Grain Texture
-            Image(
-                bitmap = paperTexture,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.FillBounds
-            )
-
-            // Layer 2: The Ink (Text)
-            BasicTextField(
-                value = text,
-                onValueChange = { if (!isPanMode) text = it },
-                enabled = !isPanMode,
-                textStyle = TextStyle(
-                    fontFamily = FontFamily.Cursive,
-                    fontSize = 36.sp, 
-                    lineHeight = lineSpacing.value.sp,
-                    color = currentPen.color
-                ),
+            // THE GINORMOUS PAPER SHEET
+            Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(start = marginX + 12.dp, top = 12.dp, end = 24.dp, bottom = 24.dp)
-                    .blur(currentPen.blur) // Simulates ink bleeding into fibers
-            )
-
-            // Layer 3: The Ruled Lines (Multiply Blend)
-            Canvas(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                    .align(Alignment.Center)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offset.x
+                        translationY = offset.y
+                    }
+                    .width(currentPaperSize.widthDp)
+                    .height(currentPaperSize.heightDp)
+                    .shadow(elevation = 12.dp, spotColor = Color.Black) 
+                    .background(paperColor)
             ) {
-                val lineSpacingPx = lineSpacing.toPx()
-                val marginXPx = marginX.toPx()
-                
-                var y = lineSpacingPx
-                while (y < size.height) {
-                    drawLine(lineColor, Offset(0f, y), Offset(size.width, y), 2f, blendMode = BlendMode.Multiply)
-                    y += lineSpacingPx
+                Image(bitmap = paperTexture, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
+
+                BasicTextField(
+                    value = text,
+                    onValueChange = { if (!isPanMode) text = it },
+                    enabled = !isPanMode,
+                    textStyle = TextStyle(
+                        fontFamily = FontFamily.Cursive,
+                        fontSize = 36.sp, 
+                        lineHeight = lineSpacing.value.sp,
+                        color = currentPen.color
+                    ),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(start = marginX + 12.dp, top = 12.dp, end = 24.dp, bottom = 24.dp)
+                        .blur(currentPen.blur) 
+                )
+
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                ) {
+                    val lineSpacingPx = lineSpacing.toPx()
+                    val marginXPx = marginX.toPx()
+                    var y = lineSpacingPx
+                    while (y < size.height) {
+                        drawLine(lineColor, Offset(0f, y), Offset(size.width, y), 2f, blendMode = BlendMode.Multiply)
+                        y += lineSpacingPx
+                    }
+                    drawLine(marginColor, Offset(marginXPx, 0f), Offset(marginXPx, size.height), 3f, blendMode = BlendMode.Multiply)
                 }
-                drawLine(marginColor, Offset(marginXPx, 0f), Offset(marginXPx, size.height), 3f, blendMode = BlendMode.Multiply)
             }
         }
 
-        // TOP CONTROL BAR
-        Row(
-            modifier = Modifier.align(Alignment.TopCenter).padding(16.dp).fillMaxWidth(), 
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+        // BOTTOM SCROLLABLE TOOLBAR (Fixes the hidden Export button issue)
+        LazyRow(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(16.dp)
+                .background(Color.Black.copy(alpha = 0.8f), shape = RoundedCornerShape(24.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            PaperSize.entries.forEach { size ->
+            items(PaperSize.entries) { size ->
                 Button(
                     onClick = { currentPaperSize = size },
-                    colors = ButtonDefaults.buttonColors(if (currentPaperSize == size) Color(0xFF1A237E) else Color(0xFF8D6E63))
-                ) { Text(size.label, color = Color.White, fontSize = 12.sp) }
+                    colors = ButtonDefaults.buttonColors(if (currentPaperSize == size) Color(0xFF1A237E) else Color(0xFF424242)),
+                    modifier = Modifier.padding(end = 8.dp)
+                ) { Text(size.label, color = Color.White) }
             }
             
-            PenType.entries.forEach { pen ->
+            items(PenType.entries) { pen ->
                 Button(
                     onClick = { currentPen = pen },
-                    colors = ButtonDefaults.buttonColors(if (currentPen == pen) Color(0xFF00695C) else Color(0xFF546E7A))
-                ) { Text(pen.label, color = Color.White, fontSize = 10.sp) }
+                    colors = ButtonDefaults.buttonColors(if (currentPen == pen) Color(0xFF00695C) else Color(0xFF424242)),
+                    modifier = Modifier.padding(end = 8.dp)
+                ) { Text(pen.label, color = Color.White) }
             }
 
-            Button(
-                onClick = { isPanMode = !isPanMode },
-                colors = ButtonDefaults.buttonColors(if (isPanMode) Color(0xFFD84315) else Color(0xFF1565C0))
-            ) { Text(if (isPanMode) "Pan ON" else "Type", color = Color.White, fontSize = 12.sp) }
+            item {
+                Button(
+                    onClick = { isPanMode = !isPanMode },
+                    colors = ButtonDefaults.buttonColors(if (isPanMode) Color(0xFFD84315) else Color(0xFF1565C0)),
+                    modifier = Modifier.padding(end = 8.dp)
+                ) { Text(if (isPanMode) "Pan ON" else "Type", color = Color.White) }
+            }
 
-            // EXPORT PNG ENGINE
-            Button(
-                onClick = {
-                    coroutineScope.launch(Dispatchers.IO) {
-                        try {
-                            val w = with(density) { currentPaperSize.widthDp.roundToPx() }
-                            val h = with(density) { currentPaperSize.heightDp.roundToPx() }
-                            
-                            // 1. Clone the paper texture
-                            val exportBitmap = paperTexture.asAndroidBitmap().copy(Bitmap.Config.ARGB_8888, true)
-                            val exportCanvas = android.graphics.Canvas(exportBitmap)
-                            
-                            // 2. Draw Lines with Native Multiply Blending
-                            val linePaint = Paint().apply { 
-                                color = lineColor.toArgb(); strokeWidth = 2f; isAntiAlias = true
-                                xfermode = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY)
-                            }
-                            val marginXPx = with(density) { marginX.toPx() }
-                            val lineSpacingPx = with(density) { lineSpacing.toPx() }
-                            
-                            var y = lineSpacingPx
-                            while (y < h) {
-                                exportCanvas.drawLine(0f, y, w.toFloat(), y, linePaint)
-                                y += lineSpacingPx
-                            }
-                            val marginPaint = Paint().apply { 
-                                color = marginColor.toArgb(); strokeWidth = 3f; isAntiAlias = true
-                                xfermode = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY)
-                            }
-                            exportCanvas.drawLine(marginXPx, 0f, marginXPx, h.toFloat(), marginPaint)
-                            
-                            // 3. Draw Text using StaticLayout (Perfect Word Wrap & Language Support)
-                            val textPaint = TextPaint().apply {
-                                color = currentPen.color.toArgb()
-                                textSize = with(density) { 36.sp.toPx() }
-                                typeface = Typeface.create("cursive", currentPen.typefaceStyle)
-                                isAntiAlias = true
-                            }
-                            val textWidth = w - marginXPx.toInt() - with(density) { 24.dp.toPx().toInt() }
-                            val layout = StaticLayout.Builder.obtain(text, 0, text.length, textPaint, textWidth).build()
-                            
-                            exportCanvas.save()
-                            exportCanvas.translate(marginXPx + with(density) { 12.dp.toPx() }, with(density) { 12.dp.toPx() })
-                            layout.draw(exportCanvas)
-                            exportCanvas.restore()
-                            
-                            // 4. Save to Gallery
-                            val contentValues = ContentValues().apply {
-                                put(MediaStore.MediaColumns.DISPLAY_NAME, "Homework_${System.currentTimeMillis()}.png")
-                                put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
-                                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/HomeCil")
-                            }
-                            val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-                            uri?.let {
-                                context.contentResolver.openOutputStream(it)?.use { stream ->
-                                    exportBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                                }
-                            }
-                            
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "Saved to Pictures/HomeCil!", Toast.LENGTH_SHORT).show()
-                            }
-                        } catch (e: Exception) {
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            // THE EXPORT BUTTON (Now guaranteed to be visible)
+            item {
+                Button(
+                    onClick = {
+                        coroutineScope.launch(Dispatchers.IO) {
+                            try {
+                                val w = with(density) { currentPaperSize.widthDp.roundToPx() }
+                                val h = with(density) { currentPaperSize.heightDp.roundToPx() }
+                                val exportBitmap = paperTexture.asAndroidBitmap().copy(Bitmap.Config.ARGB_8888, true)
+                                val exportCanvas = android.graphics.Canvas(exportBitmap)
+                                
+                                val linePaint = Paint().apply { color = lineColor.toArgb(); strokeWidth = 2f; isAntiAlias = true; xfermode = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY) }
+                                val marginXPx = with(density) { marginX.toPx() }
+                                val lineSpacingPx = with(density) { lineSpacing.toPx() }
+                                var y = lineSpacingPx
+                                while (y < h) { exportCanvas.drawLine(0f, y, w.toFloat(), y, linePaint); y += lineSpacingPx }
+                                exportCanvas.drawLine(marginXPx, 0f, marginXPx, h.toFloat(), Paint().apply { color = marginColor.toArgb(); strokeWidth = 3f; isAntiAlias = true; xfermode = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY) })
+                                
+                                val textPaint = TextPaint().apply { color = currentPen.color.toArgb(); textSize = with(density) { 36.sp.toPx() }; typeface = Typeface.create("cursive", currentPen.typefaceStyle); isAntiAlias = true }
+                                val layout = StaticLayout.Builder.obtain(text, 0, text.length, textPaint, w - marginXPx.toInt() - with(density) { 24.dp.toPx().toInt() }).build()
+                                exportCanvas.save()
+                                exportCanvas.translate(marginXPx + with(density) { 12.dp.toPx() }, with(density) { 12.dp.toPx() })
+                                layout.draw(exportCanvas)
+                                exportCanvas.restore()
+                                
+                                val contentValues = ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, "Homework_${System.currentTimeMillis()}.png"); put(MediaStore.MediaColumns.MIME_TYPE, "image/png"); put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/HomeCil") }
+                                val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+                                uri?.let { context.contentResolver.openOutputStream(it)?.use { stream -> exportBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream) } }
+                                
+                                withContext(Dispatchers.Main) { Toast.makeText(context, "Saved to Pictures/HomeCil!", Toast.LENGTH_SHORT).show() }
+                            } catch (e: Exception) {
+                                withContext(Dispatchers.Main) { Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show() }
                             }
                         }
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(Color(0xFF2E7D32))
-            ) { Text("Export", color = Color.White, fontSize = 12.sp) }
+                    },
+                    colors = ButtonDefaults.buttonColors(Color(0xFF2E7D32)) // Bright Green
+                ) { Text("Export PNG", color = Color.White) }
+            }
         }
     }
 }
