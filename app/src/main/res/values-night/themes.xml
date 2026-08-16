@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- FIX: Changed parent to DayNight.NoActionBar which is the standard for Material 1.12.0+ -->
     <style name="Theme.HomeCil" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- You can define dark mode specific colors here, or just leave it identical to the light theme -->
         <item name="colorPrimary">@color/primary</item>
         <item name="colorOnPrimary">@color/on_primary</item>
         <item name="colorPrimaryContainer">@color/primary_variant</item>
@@ -18,7 +18,7 @@
         <item name="colorOutline">@color/outline</item>
         <item name="android:statusBarColor">@color/surface</item>
         <item name="android:navigationBarColor">@color/surface</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 </resources>
