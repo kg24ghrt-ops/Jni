@@ -41,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
@@ -50,11 +51,13 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextFieldValue
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-// REQUIRED: These were missing in the previous snippet and caused the compilation error
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -74,9 +77,14 @@ enum class PenType(val label: String, val color: Color, val blur: Dp, val typefa
 fun NotebookCanvas() {
     var currentPaperSize by remember { mutableStateOf(PaperSize.A4) }
     var currentPen by remember { mutableStateOf(PenType.BALLPOINT) }
-    var text by remember { mutableStateOf("") }
+    
+    // Use TextFieldValue to support native Android text selection, cursor tracking, and Copy/Paste
+    var textFieldValue by remember { mutableStateOf(TextFieldValue("")) }
+    
+    // Track current line and layout result for the highlight effect
+    var currentLineIndex by remember { mutableStateOf(-1) }
+    var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
-    // base (fit) scale + user zoom/pan on top. -1 = "not fitted yet"
     var baseScale by remember { mutableStateOf(-1f) }
     var userScale by remember { mutableStateOf(1f) }
     var userOffset by remember { mutableStateOf(Offset.Zero) }
@@ -95,7 +103,14 @@ fun NotebookCanvas() {
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
 
-    // Cap the LONGEST edge so BOTH dims stay <= 4096 (GLES texture limit)
+    // Update the active line index whenever the cursor moves or text layout changes
+    LaunchedEffect(textFieldValue.selection, layoutResult) {
+        layoutResult?.let { result ->
+            val offset = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
+            currentLineIndex = result.getLineForOffset(offset)
+        }
+    }
+
     val paperTexture = remember(currentPaperSize, density) {
         val wPx = with(density) { currentPaperSize.widthDp.roundToPx() }
         val hPx = with(density) { currentPaperSize.heightDp.roundToPx() }
@@ -124,7 +139,6 @@ fun NotebookCanvas() {
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color(0xFFD7CCC8))) {
 
-        // Compute the scale that actually fits the sheet on this screen
         val paperWpx = with(density) { currentPaperSize.widthDp.toPx() }
         val paperHpx = with(density) { currentPaperSize.heightDp.toPx() }
         val fitScale = minOf(
@@ -133,14 +147,12 @@ fun NotebookCanvas() {
         )
         val totalScale = (if (baseScale < 0f) fitScale else baseScale) * userScale
 
-        // Re-fit whenever paper size or screen changes
         LaunchedEffect(currentPaperSize, constraints.maxWidth, constraints.maxHeight) {
             baseScale = fitScale
             userScale = 1f
             userOffset = Offset.Zero
         }
 
-        // THE INTERACTIVE DESK
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -153,7 +165,6 @@ fun NotebookCanvas() {
                     }
                 }
         ) {
-            // THE PAPER SHEET
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -163,18 +174,29 @@ fun NotebookCanvas() {
                         translationX = userOffset.x
                         translationY = userOffset.y
                     }
-                    // required* bypasses parent clamping so the sheet is
-                    // laid out at its TRUE size, then visually scaled.
                     .requiredWidth(currentPaperSize.widthDp)
                     .requiredHeight(currentPaperSize.heightDp)
                     .shadow(elevation = 12.dp, spotColor = Color.Black)
                     .background(paperColor)
             ) {
-                // 1. Grain texture
                 Image(bitmap = paperTexture, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
 
-                // 2. Ruled lines
                 Canvas(modifier = Modifier.fillMaxSize()) {
+                    // 1. Draw Active Line Highlight (Behind the rules for a notebook feel)
+                    if (currentLineIndex >= 0 && layoutResult != null) {
+                        val highlightColor = Color(0x40FFEB3B) // Transparent Yellow
+                        val textTopPadding = with(density) { 12.dp.toPx() }
+                        val lineTop = layoutResult!!.getLineTop(currentLineIndex) + textTopPadding
+                        val lineBottom = layoutResult!!.getLineBottom(currentLineIndex) + textTopPadding
+                        
+                        drawRect(
+                            color = highlightColor,
+                            topLeft = Offset(0f, lineTop),
+                            size = Size(size.width, lineBottom - lineTop)
+                        )
+                    }
+
+                    // 2. Draw Ruled Lines and Margin
                     val lineSpacingPx = lineSpacing.toPx()
                     val marginXPx = marginX.toPx()
                     var y = lineSpacingPx
@@ -185,10 +207,11 @@ fun NotebookCanvas() {
                     drawLine(marginColor, Offset(marginXPx, 0f), Offset(marginXPx, size.height), 3f)
                 }
 
-                // 3. Ink on top
+                // 3. Text Field (Supports Native Copy/Paste via TextFieldValue)
                 BasicTextField(
-                    value = text,
-                    onValueChange = { if (!isPanMode) text = it },
+                    value = textFieldValue,
+                    onValueChange = { if (!isPanMode) textFieldValue = it },
+                    onTextLayout = { layoutResult = it },
                     enabled = !isPanMode,
                     textStyle = TextStyle(
                         fontFamily = FontFamily.Cursive,
@@ -198,14 +221,14 @@ fun NotebookCanvas() {
                     ),
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(start = marginX + 12.dp, top = 12.dp, end = 24.dp, bottom = 24.dp)
+                        // REMOVED marginX constraint to allow typing OUTSIDE the left margin
+                        .padding(start = 12.dp, top = 12.dp, end = 24.dp, bottom = 24.dp)
                         .then(if (!isPanMode) Modifier.verticalScroll(scrollState) else Modifier)
                         .blur(currentPen.blur)
                 )
             }
         }
 
-        // BOTTOM TOOLBAR
         LazyRow(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -214,7 +237,6 @@ fun NotebookCanvas() {
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Using .values() ensures compatibility with Kotlin versions older than 1.9
             items(PaperSize.values()) { size ->
                 Button(
                     onClick = { currentPaperSize = size },
@@ -274,13 +296,14 @@ fun NotebookCanvas() {
                                 val fm = textPaint.fontMetrics
                                 val extraSpacing = lineSpacingPx - (fm.descent - fm.ascent)
 
-                                val textWidth = w - marginXPx.toInt() - (with(density) { 24.dp.toPx() } * scaleW).toInt()
-                                val layout = StaticLayout.Builder.obtain(text, 0, text.length, textPaint, textWidth)
+                                val textWidth = w - (with(density) { 12.dp.toPx() } * scaleW).toInt() - (with(density) { 24.dp.toPx() } * scaleW).toInt()
+                                val layout = StaticLayout.Builder.obtain(textFieldValue.text, 0, textFieldValue.text.length, textPaint, textWidth)
                                     .setLineSpacing(extraSpacing, 1f)
                                     .build()
 
                                 exportCanvas.save()
-                                exportCanvas.translate(marginXPx + with(density) { 12.dp.toPx() } * scaleW, with(density) { 12.dp.toPx() } * scaleH)
+                                // Match the new start padding (no margin offset)
+                                exportCanvas.translate(with(density) { 12.dp.toPx() } * scaleW, with(density) { 12.dp.toPx() } * scaleH)
                                 layout.draw(exportCanvas)
                                 exportCanvas.restore()
 
