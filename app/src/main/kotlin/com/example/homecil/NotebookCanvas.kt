@@ -53,7 +53,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.TextFieldValue
+import androidx.compose.ui.text.input.TextFieldValue // FIXED IMPORT
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
@@ -78,10 +78,9 @@ fun NotebookCanvas() {
     var currentPaperSize by remember { mutableStateOf(PaperSize.A4) }
     var currentPen by remember { mutableStateOf(PenType.BALLPOINT) }
     
-    // Use TextFieldValue to support native Android text selection, cursor tracking, and Copy/Paste
-    var textFieldValue by remember { mutableStateOf(TextFieldValue("")) }
+    // FIXED: Explicit type parameter added for safety, and correct import used
+    var textFieldValue by remember { mutableStateOf<TextFieldValue>(TextFieldValue("")) }
     
-    // Track current line and layout result for the highlight effect
     var currentLineIndex by remember { mutableStateOf(-1) }
     var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
@@ -103,7 +102,6 @@ fun NotebookCanvas() {
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
 
-    // Update the active line index whenever the cursor moves or text layout changes
     LaunchedEffect(textFieldValue.selection, layoutResult) {
         layoutResult?.let { result ->
             val offset = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
@@ -182,9 +180,8 @@ fun NotebookCanvas() {
                 Image(bitmap = paperTexture, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
 
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    // 1. Draw Active Line Highlight (Behind the rules for a notebook feel)
                     if (currentLineIndex >= 0 && layoutResult != null) {
-                        val highlightColor = Color(0x40FFEB3B) // Transparent Yellow
+                        val highlightColor = Color(0x40FFEB3B) 
                         val textTopPadding = with(density) { 12.dp.toPx() }
                         val lineTop = layoutResult!!.getLineTop(currentLineIndex) + textTopPadding
                         val lineBottom = layoutResult!!.getLineBottom(currentLineIndex) + textTopPadding
@@ -196,7 +193,6 @@ fun NotebookCanvas() {
                         )
                     }
 
-                    // 2. Draw Ruled Lines and Margin
                     val lineSpacingPx = lineSpacing.toPx()
                     val marginXPx = marginX.toPx()
                     var y = lineSpacingPx
@@ -207,7 +203,6 @@ fun NotebookCanvas() {
                     drawLine(marginColor, Offset(marginXPx, 0f), Offset(marginXPx, size.height), 3f)
                 }
 
-                // 3. Text Field (Supports Native Copy/Paste via TextFieldValue)
                 BasicTextField(
                     value = textFieldValue,
                     onValueChange = { if (!isPanMode) textFieldValue = it },
@@ -221,7 +216,6 @@ fun NotebookCanvas() {
                     ),
                     modifier = Modifier
                         .fillMaxSize()
-                        // REMOVED marginX constraint to allow typing OUTSIDE the left margin
                         .padding(start = 12.dp, top = 12.dp, end = 24.dp, bottom = 24.dp)
                         .then(if (!isPanMode) Modifier.verticalScroll(scrollState) else Modifier)
                         .blur(currentPen.blur)
@@ -302,7 +296,6 @@ fun NotebookCanvas() {
                                     .build()
 
                                 exportCanvas.save()
-                                // Match the new start padding (no margin offset)
                                 exportCanvas.translate(with(density) { 12.dp.toPx() } * scaleW, with(density) { 12.dp.toPx() } * scaleH)
                                 layout.draw(exportCanvas)
                                 exportCanvas.restore()
