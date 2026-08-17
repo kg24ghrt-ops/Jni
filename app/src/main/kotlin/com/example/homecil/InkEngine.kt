@@ -4,8 +4,8 @@ import android.graphics.Typeface
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow // FIXED: Was TextShadow
 import androidx.compose.ui.graphics.TileMode
-import androidx.compose.ui.text.TextShadow
 
 enum class PenType(val label: String, val baseColor: Color, val typefaceStyle: Int) {
     BALLPOINT("Ballpoint", Color(0xDD1A237E), Typeface.NORMAL),
@@ -27,8 +27,8 @@ object InkEngine {
         )
     }
 
-    fun getInkShadow(baseColor: Color): TextShadow {
-        return TextShadow(
+    fun getInkShadow(baseColor: Color): Shadow {
+        return Shadow(
             color = baseColor.copy(alpha = 0.25f),
             offset = Offset(0.5f, 0.5f),
             blurRadius = 1.2f

@@ -1,7 +1,7 @@
 package com.example.homecil
 
 import android.content.ContentValues
-import android.content.Context // FIXED: Was incorrectly importing Compose Context
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
 import android.graphics.Paint
@@ -16,7 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.Density
+import androidx.compose.ui.unit.Density // FIXED: Was androidx.compose.ui.platform.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers

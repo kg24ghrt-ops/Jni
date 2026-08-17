@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -50,7 +51,7 @@ fun NotebookCanvas() {
     var textFieldValue by remember { mutableStateOf(TextFieldValue("")) }
     var currentLineIndex by remember { mutableStateOf(-1) }
     var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
-    var isMarginMode by remember { mutableStateOf(false) } // Toggle for margin writing
+    var isMarginMode by remember { mutableStateOf(false) }
 
     var baseScale by remember { mutableStateOf(-1f) }
     var userScale by remember { mutableStateOf(1f) }
@@ -143,7 +144,6 @@ fun NotebookCanvas() {
                 val inkBrush = remember(currentPen) { InkEngine.createInkBrush(currentPen.baseColor) }
                 val inkShadow = remember(currentPen) { InkEngine.getInkShadow(currentPen.baseColor) }
 
-                // Margin Mode Logic: Shifts text field left to allow margin writing
                 val textStartPadding = if (isMarginMode) 12.dp else (marginX + 12.dp)
 
                 BasicTextField(
@@ -151,7 +151,6 @@ fun NotebookCanvas() {
                     onValueChange = {
                         if (!isPanMode) {
                             textFieldValue = it
-                            // Auto-exit margin mode when user presses Enter (simulating moving to next line)
                             if (it.text.contains("\n") && isMarginMode) {
                                 isMarginMode = false
                             }
@@ -160,7 +159,7 @@ fun NotebookCanvas() {
                     onTextLayout = { layoutResult = it },
                     enabled = !isPanMode,
                     textStyle = TextStyle(
-                        fontFamily = FontFamily.Default, // Use Default for proper Burmese rendering
+                        fontFamily = FontFamily.Default,
                         brush = inkBrush,
                         shadow = inkShadow,
                         fontSize = with(density) { 36.dp.toPx().toSp() },
@@ -168,7 +167,6 @@ fun NotebookCanvas() {
                     ),
                     modifier = Modifier
                         .fillMaxSize()
-                        // Slight rotation to break perfect digital alignment (natural handwriting flow)
                         .graphicsLayer { rotationZ = -0.4f }
                         .padding(start = textStartPadding, top = 12.dp, end = 24.dp, bottom = 24.dp)
                         .then(if (!isPanMode) Modifier.verticalScroll(scrollState) else Modifier)
