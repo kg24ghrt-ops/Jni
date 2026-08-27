@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.Dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import androidx.compose.ui.unit.dp
 
 /**
  * Handles rendering the current notebook page into a PNG and saving it
