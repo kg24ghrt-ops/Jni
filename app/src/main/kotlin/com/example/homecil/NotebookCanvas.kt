@@ -1,275 +1,229 @@
 package com.example.homecil
 
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.requiredWidth
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.TextLayoutResult
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.homecil.notebook.NotebookPage
+import com.example.homecil.notebook.NotebookToolbar
+import com.example.homecil.notebook.NotebookViewportMath
+import com.example.homecil.notebook.NotebookViewModel
 import kotlinx.coroutines.launch
-import kotlin.math.max
-import kotlin.math.min
 
+/**
+ * Main notebook canvas.
+ *
+ * Responsibilities:
+ * - Compose the notebook UI
+ * - Calculate the page's fit-to-screen scale
+ * - Connect gestures to NotebookViewModel
+ * - Connect the page to PaperEngine / InkEngine
+ * - Connect export to ExportEngine
+ *
+ * Document/editor state belongs to NotebookViewModel.
+ */
 @Composable
-fun NotebookCanvas() {
-    var currentPaperSize by remember {
-        mutableStateOf(PaperSize.A4)
-    }
-
-    var currentPen by remember {
-        mutableStateOf(PenType.BALLPOINT)
-    }
-
-    var textFieldValue by remember {
-        mutableStateOf(TextFieldValue(""))
-    }
-
-    var layoutResult by remember {
-        mutableStateOf<TextLayoutResult?>(null)
-    }
-
-    var currentLineIndex by remember {
-        mutableIntStateOf(-1)
-    }
-
-    var isMarginMode by remember {
-        mutableStateOf(false)
-    }
-
-    var isPanMode by remember {
-        mutableStateOf(false)
-    }
-
-    /*
-     * User-controlled viewport state.
-     *
-     * fitScale is calculated from the available window.
-     * userScale is only the user's additional zoom factor.
-     */
-    var userScale by remember {
-        mutableFloatStateOf(1f)
-    }
-
-    var userOffset by remember {
-        mutableStateOf(Offset.Zero)
-    }
-
-    var isExporting by remember {
-        mutableStateOf(false)
-    }
+fun NotebookCanvas(
+    viewModel: NotebookViewModel = viewModel()
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
 
-    val scrollState = rememberScrollState()
-
     /*
-     * Notebook visual constants.
+     * Notebook layout constants.
+     *
+     * These are deliberately kept here because they describe the
+     * presentation of the notebook rather than document state.
      */
     val lineSpacing = 50.dp
     val marginX = 220.dp
 
     val paperColor = Color(0xFFFBF9F2)
-    val lineColor = Color(0xFFA9C2D9)
-    val marginColor = Color(0xFFE57373)
-    val highlightColor = Color(0x40FFEB3B)
+    val backgroundColor = Color(0xFFD7CCC8)
 
     /*
-     * Texture generation is expensive enough that it should not happen
-     * during ordinary recomposition.
+     * Generate/reuse the current paper texture.
+     *
+     * PaperEngine remains the owner of paper generation.
      */
     val paperTexture = remember(
-        currentPaperSize,
-        density,
-        paperColor
+        state.paperSize,
+        density
     ) {
         PaperEngine.generateTexture(
-            currentPaperSize,
+            state.paperSize,
             density,
             paperColor
         )
     }
 
     /*
-     * Ink rendering is also stable until the selected pen changes.
+     * Generate/reuse the current ink configuration.
+     *
+     * InkEngine remains the owner of ink rendering.
      */
-    val inkBrush = remember(currentPen) {
+    val inkBrush = remember(
+        state.pen
+    ) {
         InkEngine.createInkBrush(
-            currentPen.baseColor
+            state.pen.baseColor
         )
     }
 
-    val inkShadow = remember(currentPen) {
+    val inkShadow = remember(
+        state.pen
+    ) {
         InkEngine.getInkShadow(
-            currentPen.baseColor
+            state.pen.baseColor
         )
     }
 
     /*
-     * Keep the active-line state synchronized with the cursor.
+     * A paper-size change invalidates the previous viewport.
      *
-     * Only the cursor position and layout result participate in this
-     * effect; editing unrelated state won't restart it.
+     * The document itself is preserved.
      */
     LaunchedEffect(
-        textFieldValue.selection.start,
-        layoutResult
+        state.paperSize
     ) {
-        val result = layoutResult
-
-        if (result == null || textFieldValue.text.isEmpty()) {
-            currentLineIndex = -1
-            return@LaunchedEffect
-        }
-
-        val offset = textFieldValue.selection.start.coerceIn(
-            0,
-            textFieldValue.text.length
-        )
-
-        currentLineIndex = result.getLineForOffset(offset)
-    }
-
-    /*
-     * A new paper format represents a new viewport.
-     *
-     * Resetting the viewport here prevents an A4 -> A5 transition from
-     * leaving the new page several hundred pixels off-screen.
-     */
-    LaunchedEffect(currentPaperSize) {
-        userScale = 1f
-        userOffset = Offset.Zero
+        viewModel.resetViewport()
     }
 
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFFD7CCC8))
+            .background(
+                backgroundColor
+            )
     ) {
         /*
-         * Compose constraints are pixels. Paper dimensions are Dp,
-         * therefore conversion must happen exactly once here.
+         * Convert the physical paper dimensions to pixels.
          */
-        val paperWidthPx = with(density) {
-            currentPaperSize.widthDp.toPx()
-        }
+        val paperWidthPx =
+            with(density) {
+                state.paperSize.widthDp.toPx()
+            }
 
-        val paperHeightPx = with(density) {
-            currentPaperSize.heightDp.toPx()
-        }
-
-        val availableWidthPx = constraints.maxWidth
-            .toFloat()
-            .coerceAtLeast(1f)
-
-        val availableHeightPx = constraints.maxHeight
-            .toFloat()
-            .coerceAtLeast(1f)
+        val paperHeightPx =
+            with(density) {
+                state.paperSize.heightDp.toPx()
+            }
 
         /*
-         * Automatically fit the page inside the available viewport.
-         *
-         * The 92% factor leaves a small visual border around the paper.
+         * BoxWithConstraints can theoretically report zero during
+         * initial measurement, so keep the values safe.
          */
-        val fitScale = min(
-            (availableWidthPx * 0.92f) / paperWidthPx,
-            (availableHeightPx * 0.92f) / paperHeightPx
-        ).coerceIn(
-            0.05f,
-            10f
-        )
+        val viewportWidthPx =
+            constraints.maxWidth
+                .toFloat()
+                .coerceAtLeast(1f)
 
-        val totalScale = (
-            fitScale * userScale
-        ).coerceIn(
-            0.05f,
-            10f
-        )
-
-        val scaledWidth = paperWidthPx * totalScale
-        val scaledHeight = paperHeightPx * totalScale
+        val viewportHeightPx =
+            constraints.maxHeight
+                .toFloat()
+                .coerceAtLeast(1f)
 
         /*
-         * Panning is bounded.
-         *
-         * The page is allowed to move enough to expose its edges, but it
-         * cannot disappear permanently from the viewport.
+         * Automatically fit the complete paper into the available
+         * viewport. User zoom is applied on top of this value.
          */
-        val maxHorizontalPan = max(
-            availableWidthPx * 0.45f,
-            scaledWidth * 0.5f
-        )
-
-        val maxVerticalPan = max(
-            availableHeightPx * 0.45f,
-            scaledHeight * 0.5f
-        )
-
-        val boundedOffset = Offset(
-            x = userOffset.x.coerceIn(
-                -maxHorizontalPan,
-                maxHorizontalPan
-            ),
-            y = userOffset.y.coerceIn(
-                -maxVerticalPan,
-                maxVerticalPan
+        val fitScale =
+            NotebookViewportMath.calculateFitScale(
+                paperWidth = paperWidthPx,
+                paperHeight = paperHeightPx,
+                viewportWidth = viewportWidthPx,
+                viewportHeight = viewportHeightPx
             )
-        )
+
+        val totalScale =
+            (
+                fitScale * state.zoom
+            ).coerceIn(
+                0.05f,
+                10f
+            )
 
         /*
-         * Keep the state itself synchronized with the clamped viewport.
-         *
-         * This prevents an enormous accumulated offset from remaining
-         * stored after the user releases the gesture.
+         * Calculate the largest legal translation for the current
+         * scaled page.
          */
-        if (boundedOffset != userOffset) {
-            userOffset = boundedOffset
+        val scaledWidth =
+            paperWidthPx * totalScale
+
+        val scaledHeight =
+            paperHeightPx * totalScale
+
+        val maxPan =
+            NotebookViewportMath.calculateMaxPan(
+                scaledWidth = scaledWidth,
+                scaledHeight = scaledHeight,
+                viewportWidth = viewportWidthPx,
+                viewportHeight = viewportHeightPx
+            )
+
+        /*
+         * Clamp state after a viewport resize/zoom operation.
+         *
+         * This prevents the page from becoming permanently lost outside
+         * the visible area.
+         */
+        val safeOffset =
+            NotebookViewportMath.clampOffset(
+                offset = state.offset,
+                maxPan = maxPan
+            )
+
+        /*
+         * If the legal bounds changed because of rotation, resize, zoom,
+         * or a different paper format, synchronize the corrected offset
+         * back into the ViewModel.
+         */
+        LaunchedEffect(
+            safeOffset,
+            state.offset
+        ) {
+            if (safeOffset != state.offset) {
+                viewModel.setOffset(
+                    safeOffset
+                )
+            }
         }
 
+        /*
+         * Canvas interaction surface.
+         *
+         * Pan/zoom gestures are enabled only in Pan mode, leaving normal
+         * typing completely separate from viewport manipulation.
+         */
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(isPanMode) {
-                    if (!isPanMode) {
+                .pointerInput(
+                    state.panMode,
+                    maxPan
+                ) {
+                    if (!state.panMode) {
                         return@pointerInput
                     }
 
@@ -277,449 +231,202 @@ fun NotebookCanvas() {
                         panZoomLock = false
                     ) { _, pan, zoom, _ ->
 
-                        /*
-                         * Zoom around the gesture continuously, but keep
-                         * the zoom range sane for a notebook page.
-                         */
-                        val newScale = (
-                            userScale * zoom
-                        ).coerceIn(
-                            0.25f,
-                            6f
-                        )
-
-                        userScale = newScale
-
-                        /*
-                         * Gesture pan is accumulated and bounded on every
-                         * update so it can never grow without limit.
-                         */
-                        val proposedOffset =
-                            userOffset + pan
-
-                        userOffset = Offset(
-                            x = proposedOffset.x.coerceIn(
-                                -maxHorizontalPan,
-                                maxHorizontalPan
-                            ),
-                            y = proposedOffset.y.coerceIn(
-                                -maxVerticalPan,
-                                maxVerticalPan
+                        if (
+                            zoom.isFinite() &&
+                            zoom > 0f
+                        ) {
+                            viewModel.applyZoom(
+                                zoom
                             )
-                        )
+                        }
+
+                        if (
+                            pan.x.isFinite() &&
+                            pan.y.isFinite()
+                        ) {
+                            viewModel.applyPan(
+                                pan = pan,
+                                maxPan = maxPan
+                            )
+                        }
                     }
                 }
         ) {
+
+            /*
+             * The paper itself.
+             *
+             * The page uses the logical PaperSize dimensions while
+             * graphicsLayer handles visual zoom and translation.
+             */
             Box(
                 modifier = Modifier
-                    .align(Alignment.Center)
+                    .align(
+                        Alignment.Center
+                    )
                     .graphicsLayer {
                         scaleX = totalScale
                         scaleY = totalScale
-                        translationX = boundedOffset.x
-                        translationY = boundedOffset.y
+
+                        translationX =
+                            safeOffset.x
+
+                        translationY =
+                            safeOffset.y
                     }
                     .requiredWidth(
-                        currentPaperSize.widthDp
+                        state.paperSize.widthDp
                     )
                     .requiredHeight(
-                        currentPaperSize.heightDp
+                        state.paperSize.heightDp
                     )
-                    .background(paperColor)
             ) {
 
-                /*
-                 * Paper texture layer.
-                 */
-                Image(
-                    bitmap = paperTexture,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.FillBounds
-                )
+                NotebookPage(
+                    modifier =
+                        Modifier.fillMaxSize(),
 
-                /*
-                 * Notebook ruling and active-line highlight.
-                 *
-                 * All coordinates are calculated in the paper's native
-                 * Compose coordinate system, so the transform above scales
-                 * the complete page consistently.
-                 */
-                Canvas(
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    val lineSpacingPx =
-                        lineSpacing.toPx()
+                    texture =
+                        paperTexture,
 
-                    val marginXPx =
-                        marginX.toPx()
+                    text =
+                        state.text,
 
-                    /*
-                     * Highlight the line containing the cursor.
-                     *
-                     * TextLayoutResult coordinates are relative to the
-                     * BasicTextField content, so include the same top
-                     * padding used by the text field.
-                     */
-                    val result = layoutResult
-
-                    if (
-                        currentLineIndex >= 0 &&
-                        result != null
-                    ) {
-                        val textTopPadding =
-                            12.dp.toPx()
-
-                        val lineTop =
-                            result.getLineTop(
-                                currentLineIndex
-                            ) + textTopPadding
-
-                        val lineBottom =
-                            result.getLineBottom(
-                                currentLineIndex
-                            ) + textTopPadding
-
-                        val safeTop = lineTop.coerceIn(
-                            0f,
-                            size.height
+                    onTextChange = { value ->
+                        viewModel.setText(
+                            value
                         )
-
-                        val safeBottom = lineBottom.coerceIn(
-                            safeTop,
-                            size.height
-                        )
-
-                        if (safeBottom > safeTop) {
-                            drawRect(
-                                color = highlightColor,
-                                topLeft = Offset(
-                                    0f,
-                                    safeTop
-                                ),
-                                size = Size(
-                                    size.width,
-                                    safeBottom - safeTop
-                                )
-                            )
-                        }
-                    }
-
-                    /*
-                     * Horizontal notebook lines.
-                     */
-                    if (lineSpacingPx > 0f) {
-                        var y = lineSpacingPx
-
-                        while (y < size.height) {
-                            drawLine(
-                                color = lineColor,
-                                start = Offset(
-                                    0f,
-                                    y
-                                ),
-                                end = Offset(
-                                    size.width,
-                                    y
-                                ),
-                                strokeWidth = 2f
-                            )
-
-                            y += lineSpacingPx
-                        }
-                    }
-
-                    /*
-                     * Vertical red margin.
-                     */
-                    drawLine(
-                        color = marginColor,
-                        start = Offset(
-                            marginXPx,
-                            0f
-                        ),
-                        end = Offset(
-                            marginXPx,
-                            size.height
-                        ),
-                        strokeWidth = 3f
-                    )
-                }
-
-                /*
-                 * The text starts either at the physical margin or at the
-                 * left edge when Margin mode is active.
-                 */
-                val textStartPadding =
-                    if (isMarginMode) {
-                        12.dp
-                    } else {
-                        marginX + 12.dp
-                    }
-
-                BasicTextField(
-                    value = textFieldValue,
-
-                    onValueChange = { newValue ->
-                        /*
-                         * Typing is completely disabled while panning.
-                         * This prevents accidental text modification during
-                         * a two-finger/page navigation gesture.
-                         */
-                        if (isPanMode) {
-                            return@BasicTextField
-                        }
-
-                        textFieldValue = newValue
-
-                        /*
-                         * When a newline is inserted in margin mode, return
-                         * to the normal indentation mode. This preserves the
-                         * original notebook behavior.
-                         */
-                        if (
-                            isMarginMode &&
-                            newValue.text.contains('\n')
-                        ) {
-                            isMarginMode = false
-                        }
                     },
 
-                    onTextLayout = { result ->
-                        layoutResult = result
-                    },
+                    brush =
+                        inkBrush,
 
-                    enabled = !isPanMode,
+                    shadow =
+                        inkShadow,
 
-                    textStyle = TextStyle(
-                        fontFamily = FontFamily.Default,
-                        brush = inkBrush,
-                        shadow = inkShadow,
-                        fontSize = 36.sp,
-                        lineHeight = 50.sp
-                    ),
+                    marginMode =
+                        state.marginMode,
 
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(
-                            start = textStartPadding,
-                            top = 12.dp,
-                            end = 24.dp,
-                            bottom = 24.dp
-                        )
-                        .then(
-                            if (!isPanMode) {
-                                Modifier.verticalScroll(
-                                    scrollState
-                                )
-                            } else {
-                                Modifier
-                            }
-                        )
+                    panMode =
+                        state.panMode,
+
+                    lineSpacing =
+                        lineSpacing,
+
+                    marginX =
+                        marginX
                 )
             }
         }
 
         /*
-         * Bottom toolbar.
+         * Floating notebook controls.
          *
-         * LazyRow prevents the controls from overflowing horizontally on
-         * smaller devices.
+         * The toolbar does not own state. Every action goes through
+         * NotebookViewModel.
          */
-        LazyRow(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(16.dp)
-                .background(
-                    color = Color.Black.copy(
-                        alpha = 0.80f
-                    ),
-                    shape = RoundedCornerShape(24.dp)
-                )
-                .padding(
-                    horizontal = 12.dp,
-                    vertical = 8.dp
-                ),
-            verticalAlignment = Alignment.CenterVertically
+        Box(
+            modifier =
+                Modifier.fillMaxSize(),
+
+            contentAlignment =
+                Alignment.BottomCenter
         ) {
+            NotebookToolbar(
+                paperSize =
+                    state.paperSize,
 
-            items(
-                items = PaperSize.values(),
-                key = { it.name }
-            ) { size ->
+                pen =
+                    state.pen,
 
-                Button(
-                    onClick = {
-                        if (
-                            currentPaperSize != size
-                        ) {
-                            currentPaperSize = size
+                marginMode =
+                    state.marginMode,
+
+                panMode =
+                    state.panMode,
+
+                exporting =
+                    state.exporting,
+
+                onPaperSizeSelected = { size ->
+                    viewModel.setPaperSize(
+                        size
+                    )
+                },
+
+                onPenSelected = { pen ->
+                    viewModel.setPen(
+                        pen
+                    )
+                },
+
+                onMarginToggle = {
+                    viewModel.toggleMarginMode()
+                },
+
+                onPanToggle = {
+                    viewModel.togglePanMode()
+                },
+
+                onResetViewport = {
+                    viewModel.resetViewport()
+                },
+
+                onExport = {
+                    /*
+                     * Prevent duplicate export jobs.
+                     */
+                    if (state.exporting) {
+                        return@NotebookToolbar
+                    }
+
+                    viewModel.setExporting(
+                        true
+                    )
+
+                    /*
+                     * rememberCoroutineScope is tied to this composition,
+                     * unlike creating a raw CoroutineScope inside the UI.
+                     */
+                    coroutineScope.launch {
+                        try {
+                            ExportEngine.exportToPng(
+                                context =
+                                    context,
+
+                                density =
+                                    density,
+
+                                paperSize =
+                                    state.paperSize,
+
+                                paperTexture =
+                                    paperTexture,
+
+                                text =
+                                    state.text.text,
+
+                                penType =
+                                    state.pen,
+
+                                lineSpacingDp =
+                                    lineSpacing,
+
+                                marginXDp =
+                                    marginX
+                            )
+                        } finally {
+                            /*
+                             * Always release the export lock, including
+                             * when the export engine throws.
+                             */
+                            viewModel.setExporting(
+                                false
+                            )
                         }
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor =
-                            if (
-                                currentPaperSize == size
-                            ) {
-                                Color(0xFF1A237E)
-                            } else {
-                                Color(0xFF424242)
-                            }
-                    ),
-                    modifier = Modifier.padding(
-                        end = 8.dp
-                    )
-                ) {
-                    Text(
-                        text = size.label,
-                        color = Color.White
-                    )
+                    }
                 }
-            }
-
-            items(
-                items = PenType.values(),
-                key = { it.name }
-            ) { pen ->
-
-                Button(
-                    onClick = {
-                        currentPen = pen
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor =
-                            if (
-                                currentPen == pen
-                            ) {
-                                Color(0xFF00695C)
-                            } else {
-                                Color(0xFF424242)
-                            }
-                    ),
-                    modifier = Modifier.padding(
-                        end = 8.dp
-                    )
-                ) {
-                    Text(
-                        text = pen.label,
-                        color = Color.White
-                    )
-                }
-            }
-
-            item {
-                Button(
-                    onClick = {
-                        isMarginMode = !isMarginMode
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor =
-                            if (isMarginMode) {
-                                Color(0xFF6A1B9A)
-                            } else {
-                                Color(0xFF424242)
-                            }
-                    ),
-                    modifier = Modifier.padding(
-                        end = 8.dp
-                    )
-                ) {
-                    Text(
-                        text =
-                            if (isMarginMode) {
-                                "Margin"
-                            } else {
-                                "Indent"
-                            },
-                        color = Color.White
-                    )
-                }
-            }
-
-            item {
-                Button(
-                    onClick = {
-                        isPanMode = !isPanMode
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor =
-                            if (isPanMode) {
-                                Color(0xFFD84315)
-                            } else {
-                                Color(0xFF1565C0)
-                            }
-                    ),
-                    modifier = Modifier.padding(
-                        end = 8.dp
-                    )
-                ) {
-                    Text(
-                        text =
-                            if (isPanMode) {
-                                "Pan ON"
-                            } else {
-                                "Type"
-                            },
-                        color = Color.White
-                    )
-                }
-            }
-
-            item {
-                Button(
-                    onClick = {
-                        /*
-                         * Avoid launching multiple exports at once.
-                         *
-                         * This is particularly important because PNG
-                         * generation can allocate a large bitmap.
-                         */
-                        if (isExporting) {
-                            return@Button
-                        }
-
-                        isExporting = true
-
-                        coroutineScope.launch {
-                            try {
-                                ExportEngine.exportToPng(
-                                    context = context,
-                                    density = density,
-                                    paperSize = currentPaperSize,
-                                    paperTexture = paperTexture,
-                                    text = textFieldValue.text,
-                                    penType = currentPen,
-                                    lineSpacingDp = lineSpacing,
-                                    marginXDp = marginX
-                                )
-                            } finally {
-                                isExporting = false
-                            }
-                        }
-                    },
-                    enabled = !isExporting,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor =
-                            if (isExporting) {
-                                Color(0xFF616161)
-                            } else {
-                                Color(0xFF2E7D32)
-                            },
-                        disabledContainerColor =
-                            Color(0xFF616161)
-                    )
-                ) {
-                    Text(
-                        text =
-                            if (isExporting) {
-                                "Exporting..."
-                            } else {
-                                "Export PNG"
-                            },
-                        color = Color.White
-                    )
-                }
-            }
+            )
         }
     }
 }
