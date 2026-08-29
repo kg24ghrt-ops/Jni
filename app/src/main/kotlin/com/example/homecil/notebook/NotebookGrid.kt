@@ -40,7 +40,7 @@ internal fun NotebookGrid(
      */
     val topPaddingPx = 12.dp.toPx()
 
-    val highlightBounds = remember(
+    val highlightBounds: Pair<Float, Float>? = remember(
         layoutResult,
         activeLine,
         topPaddingPx
