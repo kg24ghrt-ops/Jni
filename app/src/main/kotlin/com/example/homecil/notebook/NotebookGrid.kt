@@ -30,21 +30,26 @@ internal fun NotebookGrid(
 
     /*
      * Pre-compute the cursor-line highlight bounds outside the
-     * Canvas draw lambda. This avoids calling getLineTop() /
+     * Canvas lambda. This avoids calling getLineTop() /
      * getLineBottom() on every single draw call when only the
      * highlight position changes.
+     *
+     * Note: Dp.toPx() requires a Density context receiver which
+     * is only available in @Composable scope. The padding value
+     * is computed here and passed into the remember block.
      */
+    val topPaddingPx = 12.dp.toPx()
+
     val highlightBounds = remember(
         layoutResult,
-        activeLine
+        activeLine,
+        topPaddingPx
     ) {
         if (
             layoutResult != null &&
             activeLine >= 0 &&
             activeLine < layoutResult.lineCount
         ) {
-            val topPaddingPx = 12.dp.toPx()
-
             val rawTop =
                 layoutResult.getLineTop(
                     activeLine
