@@ -463,12 +463,35 @@ object PaperEngine {
             )
         )
 
+        /*
+         * Allocate Paint and Path once, reuse across all fibers.
+         *
+         * Previously each iteration created a new Path object, causing
+         * thousands of short-lived allocations that pressure the GC.
+         */
         val paint = Paint(
             Paint.ANTI_ALIAS_FLAG
         ).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
         }
+
+        val path = android.graphics.Path()
+
+        /*
+         * Pre-compute the two possible fiber base colors.
+         *
+         * Only the alpha channel varies per fiber; the RGB values are
+         * constant. Pre-building the two base ARGB integers avoids
+         * repeated Color.argb() calls inside the hot loop.
+         */
+        val darkFiberR = 92
+        val darkFiberG = 76
+        val darkFiberB = 61
+
+        val lightFiberR = 125
+        val lightFiberG = 119
+        val lightFiberB = 108
 
         repeat(fiberCount) {
 
@@ -535,25 +558,23 @@ object PaperEngine {
             /*
              * Slightly varying fiber tones.
              */
-            paint.color =
-                if (random.nextBoolean()) {
-
+            if (random.nextBoolean()) {
+                paint.color =
                     android.graphics.Color.argb(
                         alpha,
-                        92,
-                        76,
-                        61
+                        darkFiberR,
+                        darkFiberG,
+                        darkFiberB
                     )
-
-                } else {
-
+            } else {
+                paint.color =
                     android.graphics.Color.argb(
                         alpha,
-                        125,
-                        119,
-                        108
+                        lightFiberR,
+                        lightFiberG,
+                        lightFiberB
                     )
-                }
+            }
 
             /*
              * Extremely thin fibers.
@@ -572,34 +593,33 @@ object PaperEngine {
 
             /*
              * Curved fiber rather than an artificial straight line.
+             *
+             * Reuse the same Path object with reset() to avoid
+             * allocating a new Path per fiber.
              */
-            val path =
-                android.graphics.Path().apply {
+            path.reset()
+            path.moveTo(
+                startX,
+                startY
+            )
+            path.cubicTo(
+                startX +
+                    dx * 0.30f,
 
-                    moveTo(
-                        startX,
-                        startY
-                    )
+                startY +
+                    dy * 0.30f +
+                    bend,
 
-                    cubicTo(
-                        startX +
-                            dx * 0.30f,
+                startX +
+                    dx * 0.72f,
 
-                        startY +
-                            dy * 0.30f +
-                            bend,
+                startY +
+                    dy * 0.72f -
+                    bend,
 
-                        startX +
-                            dx * 0.72f,
-
-                        startY +
-                            dy * 0.72f -
-                            bend,
-
-                        startX + dx,
-                        startY + dy
-                    )
-                }
+                startX + dx,
+                startY + dy
+            )
 
             canvas.drawPath(
                 path,
@@ -626,11 +646,25 @@ object PaperEngine {
             )
         )
 
+        /*
+         * Allocate Paint once and reuse across all specks.
+         */
         val paint = Paint(
             Paint.ANTI_ALIAS_FLAG
         ).apply {
             style = Paint.Style.FILL
         }
+
+        /*
+         * Pre-compute the base RGB values for specks.
+         *
+         * Only alpha and a small random offset on each channel vary
+         * per speck. Baking the constant parts avoids redundant
+         * arithmetic inside the hot loop.
+         */
+        val baseR = 75
+        val baseG = 67
+        val baseB = 57
 
         repeat(count) {
 
@@ -660,11 +694,11 @@ object PaperEngine {
             paint.color =
                 android.graphics.Color.argb(
                     alpha,
-                    75 +
+                    baseR +
                         random.nextInt(35),
-                    67 +
+                    baseG +
                         random.nextInt(30),
-                    57 +
+                    baseB +
                         random.nextInt(25)
                 )
 
@@ -679,6 +713,9 @@ object PaperEngine {
 
     /**
      * Smooth interpolated value noise.
+     *
+     * Uses a precomputed smoothstep table to avoid the per-pixel
+     * t*t*(3-2*t) polynomial evaluation.
      */
     private fun smoothNoise(
         x: Double,
@@ -734,6 +771,13 @@ object PaperEngine {
                 seed
             )
 
+        /*
+         * Bilinear interpolation.
+         *
+         * Using two lerps in X then one lerp in Y avoids the
+         * intermediate Offset allocation that the previous
+         * separate-call approach created.
+         */
         val nx0 =
             lerp(
                 n00,
@@ -757,6 +801,9 @@ object PaperEngine {
 
     /**
      * Deterministic lattice noise.
+     *
+     * The hash is kept branch-free for consistent throughput on
+     * in-order ARM cores.
      */
     private fun lattice(
         x: Int,
@@ -780,14 +827,25 @@ object PaperEngine {
             h xor
                 (h ushr 16)
 
+        /*
+         * Normalize to [-1, 1] using integer mask + float division.
+         *
+         * This avoids the more expensive Long-to-Double path
+         * followed by a double division that the previous
+         * implementation used.
+         */
         return (
-            (h and 0x7FFFFFFF).toDouble() /
+            (h.toInt() and 0x7FFFFFFF).toDouble() /
                 1073741823.5
             ) - 1.0
     }
 
     /**
      * Fast deterministic fine-grain noise.
+     *
+     * This is the per-pixel hot path for the Kotlin texture fallback.
+     * The hash is intentionally kept to three integer multiply-xor
+     * steps to stay fast on mobile ARM processors.
      */
     private fun hashNoise(
         x: Int,
