@@ -1,24 +1,62 @@
-# Built application files
+```
+# Build artifacts
+build/
 *.apk
-*.ap_
-*.aab
-*.dex
+*.aar
+*.jar
 *.class
-bin/
-gen/
-out/
+
+# Dependencies
+.gradle/
+node_modules/
+venv/
+.venv/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# Python specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Java/Kotlin specific
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+
+# Gradle
 .gradle/
 build/
+
+# Local configuration
 local.properties
-proguard/
-*.log
-.navigation/
-captures/
-*.iml
-.idea/
-*.jks
-*.keystore
-.externalNativeBuild
-.cxx/
-google-services.json
-vcs.xml
+```
