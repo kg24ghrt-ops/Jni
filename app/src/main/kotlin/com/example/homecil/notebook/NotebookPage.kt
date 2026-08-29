@@ -263,7 +263,8 @@ internal fun NotebookPage(
             marginX = marginX,
             layoutResult = layoutResult,
             activeLine = activeLine,
-            showMargin = !marginMode
+            showMargin = !marginMode,
+            rulingConfig = NotebookRuling.COLLEGE
         )
 
         /*

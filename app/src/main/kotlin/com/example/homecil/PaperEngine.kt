@@ -91,12 +91,13 @@ object PaperEngine {
     fun generateTexture(
         paperSize: PaperSize,
         density: Density,
-        paperColor: Color
+        paperColor: Color,
+        rulingConfig: com.example.homecil.notebook.RulingConfig? = null
     ): ImageBitmap {
         return if (useNativeEngine) {
-            generateTextureNative(paperSize, density, paperColor)
+            generateTextureNative(paperSize, density, paperColor, rulingConfig)
         } else {
-            generateTextureKotlin(paperSize, density, paperColor)
+            generateTextureKotlin(paperSize, density, paperColor, rulingConfig)
         }
     }
 
@@ -106,7 +107,8 @@ object PaperEngine {
     private fun generateTextureNative(
         paperSize: PaperSize,
         density: Density,
-        paperColor: Color
+        paperColor: Color,
+        rulingConfig: com.example.homecil.notebook.RulingConfig? = null
     ): ImageBitmap {
         val requestedWidth = with(density) {
             paperSize.widthDp.roundToPx()
@@ -165,7 +167,71 @@ object PaperEngine {
             roughness = 0.2f        // Light roughness
         )
 
+        // Optionally add ruling lines to texture for export/printing
+        rulingConfig?.let { config ->
+            drawRulingLinesOnBitmap(
+                bitmap = bitmap,
+                density = density,
+                config = config,
+                scale = scale
+            )
+        }
+
         return bitmap.asImageBitmap()
+    }
+
+    /**
+     * Draw ruling lines on a bitmap.
+     */
+    private fun drawRulingLinesOnBitmap(
+        bitmap: Bitmap,
+        density: Density,
+        config: com.example.homecil.notebook.RulingConfig,
+        scale: Float
+    ) {
+        val canvas = android.graphics.Canvas(bitmap)
+        val paint = android.graphics.Paint().apply {
+            color = config.lineColor.toArgb()
+            strokeWidth = config.lineWidth * scale
+            isAntiAlias = true
+        }
+        
+        val marginPaint = android.graphics.Paint().apply {
+            color = config.marginColor.toArgb()
+            strokeWidth = config.lineWidth * scale
+            isAntiAlias = true
+        }
+        
+        val scaledWidth = bitmap.width.toFloat()
+        val scaledHeight = bitmap.height.toFloat()
+        
+        // Calculate scaled dimensions
+        val headerHeightPx = with(density) { config.headerHeight.toPx() } * scale
+        val lineSpacingPx = with(density) { config.lineSpacing.toPx() } * scale
+        val marginXPx = with(density) { config.marginX.toPx() } * scale
+        val verticalSpacingPx = with(density) { config.verticalLineSpacing.toPx() } * scale
+        
+        // Draw horizontal ruling lines (starting below header if enabled)
+        val startY = if (config.showHeaderSpace) headerHeightPx else 0f
+        var y = startY
+        while (y < scaledHeight) {
+            canvas.drawLine(0f, y, scaledWidth, y, paint)
+            y += lineSpacingPx
+        }
+        
+        // Draw vertical graph lines if enabled
+        if (config.showVerticalLines && verticalSpacingPx > 0) {
+            var x = 0f
+            while (x < scaledWidth) {
+                canvas.drawLine(x, 0f, x, scaledHeight, paint)
+                x += verticalSpacingPx
+            }
+        }
+        
+        // Draw margin line
+        if (config.showMarginLine && marginXPx > 0 && marginXPx < scaledWidth) {
+            canvas.drawLine(marginXPx, 0f, marginXPx, scaledHeight, marginPaint)
+        }
     }
 
     /**
@@ -174,7 +240,8 @@ object PaperEngine {
     private fun generateTextureKotlin(
         paperSize: PaperSize,
         density: Density,
-        paperColor: Color
+        paperColor: Color,
+        rulingConfig: com.example.homecil.notebook.RulingConfig? = null
     ): ImageBitmap {
 
         val requestedWidth = with(density) {
@@ -342,6 +409,17 @@ object PaperEngine {
          * ImageBitmap(bitmap) is not a valid constructor in the Compose
          * version used by this project.
          */
+        
+        // Optionally add ruling lines to texture for export/printing
+        rulingConfig?.let { config ->
+            drawRulingLinesOnBitmap(
+                bitmap = bitmap,
+                density = density,
+                config = config,
+                scale = scale
+            )
+        }
+        
         return bitmap.asImageBitmap()
     }
 

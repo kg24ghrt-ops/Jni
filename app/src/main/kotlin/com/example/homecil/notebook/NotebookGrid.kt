@@ -7,6 +7,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Dp
@@ -19,16 +21,12 @@ internal fun NotebookGrid(
     marginX: Dp,
     layoutResult: TextLayoutResult?,
     activeLine: Int,
-    showMargin: Boolean
+    showMargin: Boolean,
+    rulingConfig: RulingConfig = NotebookRuling.COLLEGE
 ) {
-    val lineColor =
-        Color(0xFFA9C2D9)
-
-    val marginColor =
-        Color(0xFFE57373)
-
-    val highlightColor =
-        Color(0x40FFEB3B)
+    val lineColor = rulingConfig.lineColor
+    val marginColor = rulingConfig.marginColor
+    val highlightColor = Color(0x40FFEB3B)
 
     /*
      * Pre-compute the cursor-line highlight bounds outside the
@@ -68,14 +66,30 @@ internal fun NotebookGrid(
         }
     }
 
+    val showHeaderSpace = rulingConfig.showHeaderSpace
+    val headerHeight = rulingConfig.headerHeight
+    val showVerticalLines = rulingConfig.showVerticalLines
+    val verticalLineSpacing = rulingConfig.verticalLineSpacing
+    val lineWidth = rulingConfig.lineWidth
+
     Canvas(
         modifier = modifier
     ) {
-        val spacingPx =
-            lineSpacing.toPx()
+        val spacingPx = lineSpacing.toPx()
+        val marginPx = marginX.toPx()
+        val headerHeightPx = headerHeight.toPx()
+        val verticalSpacingPx = verticalLineSpacing.toPx()
 
-        val marginPx =
-            marginX.toPx()
+        /*
+         * Header space - blank area at the top of the page
+         */
+        if (showHeaderSpace && headerHeightPx > 0f) {
+            drawRect(
+                color = Color.Transparent,
+                topLeft = Offset(0f, 0f),
+                size = Size(size.width, headerHeightPx)
+            )
+        }
 
         /*
          * Cursor line highlight.
@@ -108,27 +122,38 @@ internal fun NotebookGrid(
 
         /*
          * Horizontal ruling lines.
+         * Start below header space if enabled.
          */
-        val lineCount =
-            (size.height / spacingPx).toInt()
+        val startY = if (showHeaderSpace) headerHeightPx else 0f
+        val availableHeight = size.height - startY
+        val lineCount = (availableHeight / spacingPx).toInt()
 
+        // Use Path for optimized batch drawing
+        val path = Path()
+        
+        // Add horizontal lines
         for (i in 0..lineCount) {
-            val y =
-                i * spacingPx
-
-            drawLine(
-                color = lineColor,
-                start = Offset(
-                    0f,
-                    y
-                ),
-                end = Offset(
-                    size.width,
-                    y
-                ),
-                strokeWidth = 0.5f
-            )
+            val y = startY + i * spacingPx
+            path.moveTo(0f, y)
+            path.lineTo(size.width, y)
         }
+        
+        // Add vertical graph lines if enabled
+        if (showVerticalLines && verticalSpacingPx > 0f) {
+            val vertLineCount = (size.width / verticalSpacingPx).toInt()
+            for (i in 0..vertLineCount) {
+                val x = i * verticalSpacingPx
+                path.moveTo(x, 0f)
+                path.lineTo(x, size.height)
+            }
+        }
+        
+        // Draw all lines at once
+        drawPath(
+            path = path,
+            color = lineColor,
+            style = Stroke(width = lineWidth)
+        )
 
         /*
          * Vertical margin line.
@@ -144,7 +169,7 @@ internal fun NotebookGrid(
                     marginPx,
                     size.height
                 ),
-                strokeWidth = 0.5f
+                strokeWidth = lineWidth
             )
         }
     }

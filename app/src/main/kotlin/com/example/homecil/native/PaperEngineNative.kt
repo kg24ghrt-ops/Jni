@@ -41,6 +41,51 @@ object PaperEngineNative {
     )
 
     /**
+     * Render paper texture with ruling lines (for export/printing).
+     *
+     * @param bitmap The target Bitmap to render into
+     * @param width Width of the bitmap
+     * @param height Height of the bitmap
+     * @param seed Random seed for reproducible textures
+     * @param grainIntensity Intensity of paper grain (0-1)
+     * @param fiberDensity Density of cellulose fibers (0-1)
+     * @param waterStainCount Number of water stains to add
+     * @param agingYellow Amount of yellowing/aging effect (0-1)
+     * @param fiberDirection Directional bias for fibers (-1 to 1)
+     * @param roughness Overall paper roughness (0-1)
+     * @param lineSpacing Spacing between horizontal lines in pixels
+     * @param marginX Left margin position in pixels
+     * @param lineColor Color of the ruling lines (ARGB)
+     * @param showMarginLine Whether to show the vertical margin line
+     * @param showHeaderSpace Whether to reserve header space at the top
+     * @param headerHeight Height of the header space in pixels
+     * @param lineWidth Width of the ruling lines in pixels
+     * @param showVerticalLines Whether to show vertical lines (for graph paper)
+     * @param verticalLineSpacing Spacing between vertical lines in pixels
+     */
+    external fun renderPaperWithRuling(
+        bitmap: Bitmap,
+        width: Int,
+        height: Int,
+        seed: Int,
+        grainIntensity: Float,
+        fiberDensity: Float,
+        waterStainCount: Int,
+        agingYellow: Float,
+        fiberDirection: Float,
+        roughness: Float,
+        lineSpacing: Float,
+        marginX: Float,
+        lineColor: Int,
+        showMarginLine: Boolean,
+        showHeaderSpace: Boolean,
+        headerHeight: Float,
+        lineWidth: Float,
+        showVerticalLines: Boolean,
+        verticalLineSpacing: Float
+    )
+
+    /**
      * Render paper texture using multi-threading (CPU).
      *
      * @param bitmap The target Bitmap to render into

@@ -299,4 +299,136 @@ Java_com_example_homecil_native_PaperEngineNative_renderPaper(JNIEnv* env, jobje
     AndroidBitmap_unlockPixels(env, bitmap);
 }
 
+// Render paper texture with ruling lines (for export/printing)
+JNIEXPORT void JNICALL
+Java_com_example_homecil_native_PaperEngineNative_renderPaperWithRuling(JNIEnv* env, jobject thiz, jobject bitmap,
+                                                                       jint width, jint height, jint seed,
+                                                                       jfloat grain_intensity, jfloat fiber_density,
+                                                                       jint water_stain_count, jfloat aging_yellow,
+                                                                       jfloat fiber_direction, jfloat roughness,
+                                                                       jfloat line_spacing, jfloat margin_x,
+                                                                       jint line_color, jboolean show_margin_line,
+                                                                       jboolean show_header_space, jfloat header_height,
+                                                                       jfloat line_width, jboolean show_vertical_lines,
+                                                                       jfloat vertical_line_spacing) {
+    // First render the paper texture
+    Java_com_example_homecil_native_PaperEngineNative_renderPaper(
+        env, thiz, bitmap, width, height, seed,
+        grain_intensity, fiber_density, water_stain_count, aging_yellow,
+        fiber_direction, roughness
+    );
+    
+    AndroidBitmapInfo info;
+    uint32_t* pixels;
+    
+    if (AndroidBitmap_getInfo(env, bitmap, &info) < 0) {
+        LOGD("Failed to get bitmap info for ruling");
+        return;
+    }
+    
+    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
+        LOGD("Bitmap format is not RGBA_8888 for ruling");
+        return;
+    }
+    
+    if (AndroidBitmap_lockPixels(env, bitmap, (void**)&pixels) < 0) {
+        LOGD("Failed to lock pixels for ruling");
+        return;
+    }
+    
+    // Extract line color components
+    uint8_t lineR = (line_color >> 16) & 0xFF;
+    uint8_t lineG = (line_color >> 8) & 0xFF;
+    uint8_t lineB = line_color & 0xFF;
+    
+    // Line width in pixels (at least 1)
+    int lineWidthPx = static_cast<int>(line_width);
+    if (lineWidthPx < 1) lineWidthPx = 1;
+    
+    // Calculate header offset
+    int headerOffset = show_header_space ? static_cast<int>(header_height) : 0;
+    
+    // Draw horizontal ruling lines
+    if (line_spacing > 0) {
+        int spacingPx = static_cast<int>(line_spacing);
+        if (spacingPx < 1) spacingPx = 1;
+        
+        for (int y = headerOffset; y < height; y += spacingPx) {
+            // Draw line with specified width
+            int lineEndY = std::min(y + lineWidthPx, height);
+            for (int ly = y; ly < lineEndY; ly++) {
+                for (int x = 0; x < width; x++) {
+                    // Skip margin area for margin line
+                    if (show_margin_line && x < margin_x) {
+                        continue;
+                    }
+                    
+                    // Blend line color with existing pixel (30% opacity)
+                    uint32_t pixel = pixels[ly * width + x];
+                    uint8_t r = (pixel >> 16) & 0xFF;
+                    uint8_t g = (pixel >> 8) & 0xFF;
+                    uint8_t b = pixel & 0xFF;
+                    
+                    float blend = 0.3f;
+                    int newR = static_cast<int>(r * (1.0f - blend) + lineR * blend);
+                    int newG = static_cast<int>(g * (1.0f - blend) + lineG * blend);
+                    int newB = static_cast<int>(b * (1.0f - blend) + lineB * blend);
+                    
+                    newR = (newR < 0) ? 0 : (newR > 255) ? 255 : newR;
+                    newG = (newG < 0) ? 0 : (newG > 255) ? 255 : newG;
+                    newB = (newB < 0) ? 0 : (newB > 255) ? 255 : newB;
+                    
+                    pixels[ly * width + x] = 0xFF000000 | (newR << 16) | (newG << 8) | newB;
+                }
+            }
+        }
+        
+        // Draw vertical graph lines if enabled
+        if (show_vertical_lines && vertical_line_spacing > 0) {
+            int vertSpacingPx = static_cast<int>(vertical_line_spacing);
+            if (vertSpacingPx < 1) vertSpacingPx = 1;
+            
+            for (int x = 0; x < width; x += vertSpacingPx) {
+                int lineEndX = std::min(x + lineWidthPx, width);
+                for (int lx = x; lx < lineEndX; lx++) {
+                    for (int y = 0; y < height; y++) {
+                        // Blend line color with existing pixel
+                        uint32_t pixel = pixels[y * width + lx];
+                        uint8_t r = (pixel >> 16) & 0xFF;
+                        uint8_t g = (pixel >> 8) & 0xFF;
+                        uint8_t b = pixel & 0xFF;
+                        
+                        float blend = 0.3f;
+                        int newR = static_cast<int>(r * (1.0f - blend) + lineR * blend);
+                        int newG = static_cast<int>(g * (1.0f - blend) + lineG * blend);
+                        int newB = static_cast<int>(b * (1.0f - blend) + lineB * blend);
+                        
+                        newR = (newR < 0) ? 0 : (newR > 255) ? 255 : newR;
+                        newG = (newG < 0) ? 0 : (newG > 255) ? 255 : newG;
+                        newB = (newB < 0) ? 0 : (newB > 255) ? 255 : newB;
+                        
+                        pixels[y * width + lx] = 0xFF000000 | (newR << 16) | (newG << 8) | newB;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Draw margin line (red by default)
+    if (show_margin_line && margin_x > 0 && margin_x < width) {
+        int marginX_int = static_cast<int>(margin_x);
+        int lineEndX = std::min(marginX_int + lineWidthPx, width);
+        
+        for (int x = marginX_int; x < lineEndX; x++) {
+            for (int y = 0; y < height; y++) {
+                // Red margin line
+                pixels[y * width + x] = 0xFFE57373;
+            }
+        }
+    }
+    
+    // Unlock the bitmap
+    AndroidBitmap_unlockPixels(env, bitmap);
+}
+
 }
