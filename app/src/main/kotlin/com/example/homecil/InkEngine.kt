@@ -1,10 +1,11 @@
 package com.example.homecil
 
-import androidx.compose.ui.geometry.Offset
+import android.graphics.Bitmap
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.TileMode
+import com.example.homecil.native.PaperEngineNative
 import kotlin.math.max
 
 /**
@@ -44,10 +45,16 @@ enum class PenType(
  * - Create the brush used by the Compose text renderer.
  * - Create the subtle optical shadow used to make ink feel less flat.
  * - Keep ink effects restrained enough that text remains readable.
+ * - Bridge to native C++ ink simulation functions.
  *
  * The engine is stateless and safe to reuse across recompositions.
  */
 object InkEngine {
+
+    /**
+     * Use native C++ engine for ink simulation.
+     */
+    var useNativeEngine: Boolean = true
 
     /**
      * Size of the subtle ink-variation gradient.
@@ -125,11 +132,11 @@ object InkEngine {
                 lightInk,
                 darkInk
             ),
-            start = Offset(
+            start = androidx.compose.ui.geometry.Offset(
                 0f,
                 0f
             ),
-            end = Offset(
+            end = androidx.compose.ui.geometry.Offset(
                 GRADIENT_SIZE,
                 GRADIENT_SIZE
             ),
@@ -159,12 +166,68 @@ object InkEngine {
                         1f
                     )
             ),
-            offset = Offset(
+            offset = androidx.compose.ui.geometry.Offset(
                 SHADOW_X,
                 SHADOW_Y
             ),
             blurRadius = SHADOW_BLUR
         )
+    }
+
+    /**
+     * Apply native ink simulation to a bitmap.
+     */
+    fun applyInkToBitmap(
+        paperBitmap: Bitmap,
+        inkBitmap: Bitmap,
+        x: Int,
+        y: Int,
+        inkColor: Color,
+        absorption: Float = 0.3f,
+        noiseIntensity: Float = 0.1f,
+        seed: Int = 0
+    ) {
+        if (useNativeEngine) {
+            PaperEngineNative.simulateInk(
+                bitmap = paperBitmap,
+                inkBitmap = inkBitmap,
+                x = x,
+                y = y,
+                inkColorR = inkColor.red / 255.0f,
+                inkColorG = inkColor.green / 255.0f,
+                inkColorB = inkColor.blue / 255.0f,
+                absorption = absorption,
+                noiseIntensity = noiseIntensity,
+                seed = seed
+            )
+        }
+    }
+
+    /**
+     * Apply native ink simulation with simple color stamping.
+     */
+    fun applyInkSimple(
+        paperBitmap: Bitmap,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        inkColor: Color,
+        opacity: Float = 1.0f
+    ) {
+        if (useNativeEngine) {
+            PaperEngineNative.simulateInkSimple(
+                bitmap = paperBitmap,
+                x = x,
+                y = y,
+                width = width,
+                height = height,
+                inkColorR = inkColor.red / 255.0f,
+                inkColorG = inkColor.green / 255.0f,
+                inkColorB = inkColor.blue / 255.0f,
+                opacity = opacity
+            )
+        }
     }
 
     /**

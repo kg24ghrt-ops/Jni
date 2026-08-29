@@ -1,13 +1,19 @@
 cmake_minimum_required(VERSION 3.18.1)
-project("paper_jni")
+project("native-lib")
 
-# 1. Import the pre-built Rust library
-add_library(paper_engine SHARED IMPORTED)
-set_target_properties(paper_engine PROPERTIES IMPORTED_LOCATION
-    ${CMAKE_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libpaper_engine.so)
+# Build the native library from all C++ source files
+add_library(native-lib SHARED 
+    native-lib.cpp
+    ink_engine.cpp
+    distort_engine.cpp
+)
 
-# 2. Build the JNI bridge
-add_library(paper_jni SHARED paper_jni.cpp)
+# Include directories
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-# 3. Link them together with Android and Log libraries
-target_link_libraries(paper_jni paper_engine android log)
+# Link Android and required libraries
+target_link_libraries(native-lib 
+    android
+    log
+    jnigraphics
+)

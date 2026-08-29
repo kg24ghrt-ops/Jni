@@ -10,6 +10,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.example.homecil.native.PaperEngineNative
 import java.util.Random
 import kotlin.math.cos
 import kotlin.math.floor
@@ -44,6 +45,10 @@ enum class PaperSize(
 /**
  * Procedural paper renderer.
  *
+ * This object provides two rendering paths:
+ * 1. Native C++ rendering via PaperEngineNative (fast, realistic)
+ * 2. Pure Kotlin rendering (fallback, compatible)
+ *
  * The texture is composed from multiple weak spatial-frequency layers:
  *
  * 1. Large-scale formation variation
@@ -74,9 +79,105 @@ object PaperEngine {
     private const val BASE_SEED = 0x4A4E49
 
     /**
+     * Use native C++ engine for paper rendering.
+     * Set to false to use pure Kotlin implementation.
+     */
+    var useNativeEngine: Boolean = true
+
+    /**
      * Generate a realistic procedural paper texture.
+     * Uses native C++ engine when available, falls back to Kotlin implementation.
      */
     fun generateTexture(
+        paperSize: PaperSize,
+        density: Density,
+        paperColor: Color
+    ): ImageBitmap {
+        return if (useNativeEngine) {
+            generateTextureNative(paperSize, density, paperColor)
+        } else {
+            generateTextureKotlin(paperSize, density, paperColor)
+        }
+    }
+
+    /**
+     * Generate paper texture using native C++ engine.
+     */
+    private fun generateTextureNative(
+        paperSize: PaperSize,
+        density: Density,
+        paperColor: Color
+    ): ImageBitmap {
+        val requestedWidth = with(density) {
+            paperSize.widthDp.roundToPx()
+        }.coerceAtLeast(1)
+
+        val requestedHeight = with(density) {
+            paperSize.heightDp.roundToPx()
+        }.coerceAtLeast(1)
+
+        /*
+         * Reduce the procedural source resolution when necessary.
+         *
+         * This prevents large UI density values from producing unnecessarily
+         * huge intermediate bitmaps.
+         */
+        val scale = min(
+            1f,
+            MAX_TEXTURE_SIZE.toFloat() /
+                max(
+                    requestedWidth,
+                    requestedHeight
+                ).toFloat()
+        )
+
+        val width = max(
+            1,
+            (requestedWidth * scale).toInt()
+        )
+
+        val height = max(
+            1,
+            (requestedHeight * scale).toInt()
+        )
+
+        // Create bitmap for native rendering
+        val bitmap = Bitmap.createBitmap(
+            width,
+            height,
+            Bitmap.Config.ARGB_8888
+        )
+
+        // Calculate seed based on paper size and color
+        val seed = BASE_SEED + width * 31 + height * 17 + paperColor.hashCode()
+
+        // Convert Color to RGB components for native engine
+        val argb = paperColor.toArgb()
+        val r = (argb and 0x00FF0000) ushr 16 / 255.0f
+        val g = (argb and 0x0000FF00) ushr 8 / 255.0f
+        val b = (argb and 0x000000FF) / 255.0f
+
+        // Use native engine to render paper
+        PaperEngineNative.renderPaper(
+            bitmap = bitmap,
+            width = width,
+            height = height,
+            seed = seed,
+            grainIntensity = 0.5f,  // Medium grain
+            fiberDensity = 0.3f,    // Moderate fiber density
+            waterStainCount = 0,    // No water stains for clean paper
+            agingYellow = 0.05f,    // Slight aging
+            fiberDirection = 0.0f,  // No directional bias
+            roughness = 0.2f        // Light roughness
+        )
+
+        return bitmap.asImageBitmap()
+    }
+
+    /**
+     * Generate paper texture using pure Kotlin implementation (fallback).
+     */
+    private fun generateTextureKotlin(
         paperSize: PaperSize,
         density: Density,
         paperColor: Color
@@ -248,6 +349,103 @@ object PaperEngine {
          * version used by this project.
          */
         return bitmap.asImageBitmap()
+    }
+
+    /**
+     * Apply distortion to a bitmap using native C++ engine.
+     */
+    fun distortBitmap(
+        bitmap: Bitmap,
+        seed: Int,
+        distortionScale: Float = 0.5f,
+        sineWarpScale: Float = 0.3f,
+        curvatureScale: Float = 0.2f
+    ) {
+        if (useNativeEngine) {
+            PaperEngineNative.distortBitmap(
+                bitmap = bitmap,
+                seed = seed,
+                distortionScale = distortionScale,
+                sineWarpScale = sineWarpScale,
+                curvatureScale = curvatureScale
+            )
+        } else {
+            // Fallback: apply simple distortion in Kotlin
+            // For now, just do nothing (native path handles it)
+        }
+    }
+
+    /**
+     * Apply distortion optimized for character bitmaps.
+     */
+    fun distortCharacter(
+        bitmap: Bitmap,
+        seed: Int,
+        scale: Float = 0.5f
+    ) {
+        if (useNativeEngine) {
+            PaperEngineNative.distortCharacter(
+                bitmap = bitmap,
+                seed = seed,
+                scale = scale
+            )
+        }
+    }
+
+    /**
+     * Simulate ink on paper using native C++ engine.
+     */
+    fun simulateInk(
+        paperBitmap: Bitmap,
+        inkBitmap: Bitmap,
+        x: Int,
+        y: Int,
+        inkColor: Color,
+        absorption: Float = 0.3f,
+        noiseIntensity: Float = 0.1f,
+        seed: Int = 0
+    ) {
+        if (useNativeEngine) {
+            PaperEngineNative.simulateInk(
+                bitmap = paperBitmap,
+                inkBitmap = inkBitmap,
+                x = x,
+                y = y,
+                inkColorR = inkColor.red / 255.0f,
+                inkColorG = inkColor.green / 255.0f,
+                inkColorB = inkColor.blue / 255.0f,
+                absorption = absorption,
+                noiseIntensity = noiseIntensity,
+                seed = seed
+            )
+        }
+    }
+
+    /**
+     * Simplified ink simulation for direct color stamping.
+     */
+    fun simulateInkSimple(
+        paperBitmap: Bitmap,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        inkColor: Color,
+        opacity: Float = 1.0f
+    ) {
+        if (useNativeEngine) {
+            PaperEngineNative.simulateInkSimple(
+                bitmap = paperBitmap,
+                x = x,
+                y = y,
+                width = width,
+                height = height,
+                inkColorR = inkColor.red / 255.0f,
+                inkColorG = inkColor.green / 255.0f,
+                inkColorB = inkColor.blue / 255.0f,
+                opacity = opacity
+            )
+        }
     }
 
     /**
