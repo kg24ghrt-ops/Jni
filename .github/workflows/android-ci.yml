@@ -25,8 +25,6 @@ jobs:
 
       - name: Setup Android NDK and SDK
         uses: android-actions/setup-android@v3
-        with:
-          ndk-version: '28.2.13676358'
 
       - name: Install CMake
         run: sudo apt-get update && sudo apt-get install -y cmake

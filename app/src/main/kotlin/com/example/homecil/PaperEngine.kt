@@ -151,12 +151,6 @@ object PaperEngine {
         // Calculate seed based on paper size and color
         val seed = BASE_SEED + width * 31 + height * 17 + paperColor.hashCode()
 
-        // Convert Color to RGB components for native engine
-        val argb = paperColor.toArgb()
-        val r = (argb and 0x00FF0000) ushr 16 / 255.0f
-        val g = (argb and 0x0000FF00) ushr 8 / 255.0f
-        val b = (argb and 0x000000FF) / 255.0f
-
         // Use native engine to render paper
         PaperEngineNative.renderPaper(
             bitmap = bitmap,

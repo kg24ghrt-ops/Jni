@@ -41,6 +41,35 @@ object PaperEngineNative {
     )
 
     /**
+     * Render paper texture using multi-threading.
+     *
+     * @param bitmap The target Bitmap to render into
+     * @param width Width of the bitmap
+     * @param height Height of the bitmap
+     * @param seed Random seed for reproducible textures
+     * @param grainIntensity Intensity of paper grain (0-1)
+     * @param fiberDensity Density of cellulose fibers (0-1)
+     * @param waterStainCount Number of water stains to add
+     * @param agingYellow Amount of yellowing/aging effect (0-1)
+     * @param fiberDirection Directional bias for fibers (-1 to 1)
+     * @param roughness Overall paper roughness (0-1)
+     * @param threadCount Number of threads to use (1+)
+     */
+    external fun renderPaperMT(
+        bitmap: Bitmap,
+        width: Int,
+        height: Int,
+        seed: Int,
+        grainIntensity: Float,
+        fiberDensity: Float,
+        waterStainCount: Int,
+        agingYellow: Float,
+        fiberDirection: Float,
+        roughness: Float,
+        threadCount: Int
+    )
+
+    /**
      * Simulate ink absorption and bleeding on paper.
      *
      * @param bitmap The target paper bitmap
@@ -121,4 +150,54 @@ object PaperEngineNative {
         seed: Int,
         scale: Float
     )
+
+    /**
+     * Get the number of available CPU cores.
+     *
+     * @return Number of CPU cores
+     */
+    external fun getCpuCoreCount(): Int
+
+    /**
+     * Check if NEON SIMD is available on this device.
+     *
+     * @return true if NEON is available
+     */
+    external fun hasNeonSupport(): Boolean
+
+    /**
+     * Check if SSE SIMD is available on this device.
+     *
+     * @return true if SSE is available
+     */
+    external fun hasSseSupport(): Boolean
+
+    /**
+     * Get device capability information as a formatted string.
+     */
+    fun getCapabilities(): String {
+        return """
+        | Capability | Available |
+        |------------|----------|
+        | CPU Cores | ${getCpuCoreCount()} |
+        | NEON Support | ${hasNeonSupport()} |
+        | SSE Support | ${hasSseSupport()} |
+        | Recommended Threads | ${recommendedThreadCount()} |
+        """.trimMargin()
+    }
+
+    /**
+     * Get the recommended number of threads for rendering.
+     * Uses CPU core count but caps it for optimal performance.
+     */
+    fun recommendedThreadCount(): Int {
+        val cores = getCpuCoreCount()
+        // For small bitmaps, single thread is faster due to overhead
+        // For large bitmaps, use up to 4 threads (diminishing returns after that)
+        return when {
+            cores <= 2 -> cores
+            cores <= 4 -> cores
+            else -> 4  // Cap at 4 for most mobile devices
+        }
+    }
 }
