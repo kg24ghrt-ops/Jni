@@ -19,12 +19,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.example.homecil.PaperEngine
 import com.example.homecil.PaperSize
@@ -111,7 +112,7 @@ fun NotebookRulingTestScreen() {
             PaperEngine.generateTexture(
                 paperSize = paperSize,
                 density = density,
-                paperColor = android.graphics.Color.parseColor("#FBF9F2"),
+                paperColor = Color(0xFFFBF9F2),
                 rulingConfig = NotebookRuling.COLLEGE
             )
         }
@@ -120,7 +121,7 @@ fun NotebookRulingTestScreen() {
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(0.7f)
-                .background(android.graphics.Color.WHITE)
+                .background(Color.White)
         ) {
             androidx.compose.foundation.Image(
                 bitmap = textureWithRuling,
@@ -146,7 +147,7 @@ fun RulingPreviewCard(
         PaperEngine.generateTexture(
             paperSize = paperSize,
             density = density,
-            paperColor = android.graphics.Color.parseColor("#FBF9F2")
+            paperColor = Color(0xFFFBF9F2)
         )
     }
     
@@ -162,7 +163,7 @@ fun RulingPreviewCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(0.7f)
-                .background(android.graphics.Color.WHITE)
+                .background(Color.White)
         ) {
             androidx.compose.foundation.Image(
                 bitmap = texture,
@@ -220,14 +221,14 @@ fun NotebookRulingPreview() {
                 val texture = PaperEngine.generateTexture(
                     paperSize = PaperSize.A5,
                     density = density,
-                    paperColor = android.graphics.Color.parseColor("#FBF9F2")
+                    paperColor = Color(0xFFFBF9F2)
                 )
                 
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(0.7f)
-                        .background(android.graphics.Color.WHITE)
+                        .background(Color.White)
                 ) {
                     androidx.compose.foundation.Image(
                         bitmap = texture,
