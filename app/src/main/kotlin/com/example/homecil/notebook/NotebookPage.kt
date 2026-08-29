@@ -2,6 +2,8 @@ package com.example.homecil.notebook
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -25,8 +27,6 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.padding
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -44,122 +44,122 @@ import kotlin.math.roundToInt
  * Document state is owned by NotebookViewModel.
  * Rendering configuration is supplied by InkEngine/PaperEngine.
  *
- * This separation keeps the page composable lightweight and prevents
- * editor state from becoming duplicated between the UI and ViewModel.
+ * This implementation is defensive around TextLayoutResult because
+ * Compose can temporarily expose a layout belonging to the previous
+ * text value while TextFieldValue already contains the new selection.
  */
 @Composable
 internal fun NotebookPage(
     modifier: Modifier,
-
     texture: ImageBitmap,
-
     text: TextFieldValue,
     onTextChange: (TextFieldValue) -> Unit,
-
     brush: Brush,
     shadow: Shadow,
-
     marginMode: Boolean,
     panMode: Boolean,
-
     lineSpacing: Dp,
     marginX: Dp
 ) {
-    /*
-     * The scroll state belongs to this page instance rather than the
-     * document. Changing the paper format creates a new visual page
-     * through the parent composition and the state remains predictable.
-     */
-    val scrollState =
-        rememberScrollState()
-
-    /*
-     * Used for cursor-following behavior.
-     *
-     * When the user types beyond the visible portion of the page,
-     * NotebookPage automatically moves the viewport enough to keep
-     * the active line visible.
-     */
-    val coroutineScope =
-        rememberCoroutineScope()
+    val scrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
 
     var layoutResult by remember {
         mutableStateOf<TextLayoutResult?>(null)
     }
 
     /*
-     * Cache the active line instead of recalculating it during every
-     * draw pass.
-     *
-     * -1 means there is currently no valid active line.
+     * Capture these independently so the remembered calculations are
+     * invalidated whenever the actual text or selection changes.
      */
-    val activeLine =
-        remember(
-            layoutResult,
-            text.selection.start,
-            text.text.length
-        ) {
-            val layout =
-                layoutResult
-
-            if (
-                layout == null ||
-                text.text.isEmpty()
-            ) {
-                -1
-            } else {
-                val safeOffset =
-                    text.selection.start.coerceIn(
-                        0,
-                        text.text.length
-                    )
-
-                layout.getLineForOffset(
-                    safeOffset
-                )
-            }
-        }
+    val currentText = text.text
+    val selectionStart = text.selection.start
 
     /*
-     * Keep the cursor location available separately so we can perform
-     * scroll-to-cursor without asking the layout engine repeatedly.
+     * IMPORTANT:
+     *
+     * TextLayoutResult may temporarily represent the previous text.
+     * Therefore we must validate the selection against the text length
+     * belonging to THAT layout, not only against text.text.length.
      */
-    val cursorRect =
-        remember(
-            layoutResult,
-            text.selection.start
-        ) {
-            val layout =
-                layoutResult
+    val activeLine = remember(
+        layoutResult,
+        currentText,
+        selectionStart
+    ) {
+        val layout = layoutResult
+            ?: return@remember -1
 
-            if (layout == null) {
-                null
-            } else {
-                val safeOffset =
-                    text.selection.start.coerceIn(
-                        0,
-                        text.text.length
-                    )
+        val layoutLength =
+            layout.layoutInput.text.length
 
-                layout.getCursorRect(
-                    safeOffset
-                )
-            }
+        /*
+         * An empty MultiParagraph has no useful line information.
+         */
+        if (layoutLength <= 0) {
+            return@remember -1
         }
 
+        val safeOffset =
+            selectionStart.coerceIn(
+                0,
+                layoutLength
+            )
+
+        runCatching {
+            layout.getLineForOffset(
+                safeOffset
+            )
+        }.getOrDefault(-1)
+    }
+
     /*
-     * Keep the paper colors centralized.
+     * Cursor rectangle used for automatic scrolling.
      *
-     * The texture remains the primary visual surface; this color is the
-     * fallback/background underneath it.
+     * This is intentionally calculated defensively. A layout can be
+     * momentarily out of sync with TextFieldValue during recomposition.
      */
+    val cursorRect = remember(
+        layoutResult,
+        currentText,
+        selectionStart
+    ) {
+        val layout = layoutResult
+            ?: return@remember null
+
+        val layoutLength =
+            layout.layoutInput.text.length
+
+        /*
+         * There is no valid non-zero cursor offset when the paragraph
+         * itself is empty.
+         */
+        if (layoutLength <= 0) {
+            return@remember null
+        }
+
+        val safeOffset =
+            selectionStart.coerceIn(
+                0,
+                layoutLength
+            )
+
+        /*
+         * Compose's text layout can still theoretically change between
+         * validation and getCursorRect(). Treat that as a transient
+         * layout condition instead of allowing it to crash the app.
+         */
+        runCatching {
+            layout.getCursorRect(
+                safeOffset
+            )
+        }.getOrNull()
+    }
+
     val paperColor =
         Color(0xFFFBF9F2)
 
     /*
-     * Notebook text begins immediately after the margin when margins
-     * are enabled.
-     *
      * In margin mode the margin is hidden, so text moves toward the
      * normal page edge.
      */
@@ -171,23 +171,15 @@ internal fun NotebookPage(
         }
 
     /*
-     * Follow the active cursor.
+     * Keep the active cursor visible.
      *
-     * TextLayoutResult coordinates are in pixels, which matches the
-     * ScrollState coordinate system.
-     *
-     * A conservative viewport estimate is used because this composable
-     * intentionally does not own a separate measurement/layout system.
+     * Cursor-following is disabled while the user is panning the page.
      */
     LaunchedEffect(
         cursorRect,
         text.selection,
         panMode
     ) {
-        /*
-         * Never force-scroll while the user is manipulating the page.
-         * Pan mode belongs to NotebookCanvas/NotebookViewModel.
-         */
         if (panMode) {
             return@LaunchedEffect
         }
@@ -202,19 +194,16 @@ internal fun NotebookPage(
         val cursorBottom =
             cursor.bottom.roundToInt()
 
-        /*
-         * Approximate the visible editor region using the current
-         * ScrollState maximum.
-         *
-         * The actual scroll container remains authoritative; this only
-         * ensures that the active line isn't left far outside the view.
-         */
         val currentScroll =
             scrollState.value
 
         val targetPadding =
             80
 
+        /*
+         * This remains intentionally conservative because the page
+         * itself owns the scroll container.
+         */
         val visibleTop =
             currentScroll + targetPadding
 
@@ -236,10 +225,8 @@ internal fun NotebookPage(
             cursorBottom > visibleBottom -> {
                 coroutineScope.launch {
                     scrollState.animateScrollTo(
-                        (
-                            cursorBottom -
-                                targetPadding
-                        ).coerceAtLeast(0)
+                        (cursorBottom - targetPadding)
+                            .coerceAtLeast(0)
                     )
                 }
             }
@@ -254,75 +241,42 @@ internal fun NotebookPage(
     ) {
 
         /*
-         * ----------------------------------------------------------------
+         * ---------------------------------------------------------------
          * PAPER TEXTURE
-         * ----------------------------------------------------------------
-         *
-         * The generated bitmap is rendered beneath every other layer.
-         *
-         * ContentScale.FillBounds is intentional: PaperEngine already
-         * generates the texture for the selected paper dimensions.
+         * ---------------------------------------------------------------
          */
         Image(
             bitmap = texture,
-
             contentDescription = null,
-
-            modifier =
-                Modifier.matchParentSize(),
-
-            contentScale =
-                ContentScale.FillBounds
+            modifier = Modifier.matchParentSize(),
+            contentScale = ContentScale.FillBounds
         )
 
         /*
-         * ----------------------------------------------------------------
+         * ---------------------------------------------------------------
          * NOTEBOOK GRID
-         * ----------------------------------------------------------------
-         *
-         * The grid does not own text state. It receives the calculated
-         * layout result so it can synchronize horizontal ruling with
-         * actual text lines.
+         * ---------------------------------------------------------------
          */
         NotebookGrid(
-            modifier =
-                Modifier.matchParentSize(),
-
-            lineSpacing =
-                lineSpacing,
-
-            marginX =
-                marginX,
-
-            layoutResult =
-                layoutResult,
-
-            activeLine =
-                activeLine,
-
-            showMargin =
-                !marginMode
+            modifier = Modifier.matchParentSize(),
+            lineSpacing = lineSpacing,
+            marginX = marginX,
+            layoutResult = layoutResult,
+            activeLine = activeLine,
+            showMargin = !marginMode
         )
 
         /*
-         * ----------------------------------------------------------------
+         * ---------------------------------------------------------------
          * TEXT EDITOR
-         * ----------------------------------------------------------------
-         *
-         * BasicTextField is deliberately kept as the actual editor.
-         * This avoids introducing a heavyweight text component into the
-         * notebook rendering pipeline.
+         * ---------------------------------------------------------------
          */
         BasicTextField(
             value = text,
 
             onValueChange = { newValue ->
-
                 /*
                  * Pan mode and text editing are mutually exclusive.
-                 *
-                 * NotebookCanvas handles gestures while this component
-                 * simply refuses to mutate document state.
                  */
                 if (panMode) {
                     return@BasicTextField
@@ -334,72 +288,39 @@ internal fun NotebookPage(
             },
 
             onTextLayout = { result ->
-                layoutResult =
-                    result
+                /*
+                 * Always replace the layout with the newest result.
+                 * Cursor calculations above independently validate it
+                 * against result.layoutInput.text.
+                 */
+                layoutResult = result
             },
 
-            /*
-             * Disabling the editor while panning prevents accidental
-             * keyboard/text interaction during viewport manipulation.
-             */
             enabled = !panMode,
 
-            /*
-             * Keep the keyboard/editor semantics available when enabled.
-             */
             readOnly = false,
 
             textStyle = TextStyle(
-                fontFamily =
-                    FontFamily.Default,
-
-                brush =
-                    brush,
-
-                shadow =
-                    shadow,
-
-                fontSize =
-                    36.sp,
-
-                lineHeight =
-                    50.sp
+                fontFamily = FontFamily.Default,
+                brush = brush,
+                shadow = shadow,
+                fontSize = 36.sp,
+                lineHeight = 50.sp
             ),
 
-            /*
-             * A restrained cursor keeps the writing experience visually
-             * consistent with the selected ink.
-             */
-            cursorBrush =
-                brush,
+            cursorBrush = brush,
 
             modifier = Modifier
                 .matchParentSize()
-
-                /*
-                 * Vertical scrolling belongs to the text editor only.
-                 * NotebookCanvas continues to own page pan/zoom.
-                 */
                 .verticalScroll(
                     scrollState,
                     enabled = !panMode
                 )
-
-                /*
-                 * The text must remain inside the physical notebook page.
-                 */
                 .padding(
-                    start =
-                        textStartPadding,
-
-                    top =
-                        12.dp,
-
-                    end =
-                        24.dp,
-
-                    bottom =
-                        24.dp
+                    start = textStartPadding,
+                    top = 12.dp,
+                    end = 24.dp,
+                    bottom = 24.dp
                 )
         )
     }
