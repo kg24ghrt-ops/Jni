@@ -28,6 +28,39 @@ internal fun NotebookGrid(
     val highlightColor =
         Color(0x40FFEB3B)
 
+    /*
+     * Pre-compute the cursor-line highlight bounds outside the
+     * Canvas draw lambda. This avoids calling getLineTop() /
+     * getLineBottom() on every single draw call when only the
+     * highlight position changes.
+     */
+    val highlightBounds = remember(
+        layoutResult,
+        activeLine
+    ) {
+        if (
+            layoutResult != null &&
+            activeLine >= 0 &&
+            activeLine < layoutResult.lineCount
+        ) {
+            val topPaddingPx = 12.dp.toPx()
+
+            val rawTop =
+                layoutResult.getLineTop(
+                    activeLine
+                ) + topPaddingPx
+
+            val rawBottom =
+                layoutResult.getLineBottom(
+                    activeLine
+                ) + topPaddingPx
+
+            Pair(rawTop, rawBottom)
+        } else {
+            null
+        }
+    }
+
     Canvas(
         modifier = modifier
     ) {
@@ -40,24 +73,7 @@ internal fun NotebookGrid(
         /*
          * Cursor line highlight.
          */
-        if (
-            layoutResult != null &&
-            activeLine >= 0 &&
-            activeLine < layoutResult.lineCount
-        ) {
-            val topPadding =
-                12.dp.toPx()
-
-            val top =
-                layoutResult.getLineTop(
-                    activeLine
-                ) + topPadding
-
-            val bottom =
-                layoutResult.getLineBottom(
-                    activeLine
-                ) + topPadding
-
+        highlightBounds?.let { (top, bottom) ->
             val safeTop =
                 top.coerceIn(
                     0f,
@@ -90,14 +106,18 @@ internal fun NotebookGrid(
 
         /*
          * Horizontal notebook ruling.
+         *
+         * Pre-calculate the number of lines to avoid repeated
+         * comparison overhead in the while-loop.
          */
         if (spacingPx > 0f) {
 
-            var y = spacingPx
+            val lineCount =
+                (size.height / spacingPx).toInt()
 
-            while (
-                y < size.height
-            ) {
+            for (i in 1..lineCount) {
+                val y = spacingPx * i
+
                 drawLine(
                     color = lineColor,
                     start = Offset(
@@ -110,8 +130,6 @@ internal fun NotebookGrid(
                     ),
                     strokeWidth = 2f
                 )
-
-                y += spacingPx
             }
         }
 
