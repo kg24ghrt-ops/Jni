@@ -6,6 +6,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -38,9 +39,9 @@ internal fun NotebookGrid(
      * is only available in @Composable scope. The padding value
      * is computed here and passed into the remember block.
      */
-    val topPaddingPx = 12.dp.toPx()
+    val topPaddingPx = with(LocalDensity.current) { 12.dp.toPx() }
 
-    val highlightBounds = remember(
+    val highlightBounds: Pair<Float, Float>? = remember(
         layoutResult,
         activeLine,
         topPaddingPx
@@ -91,55 +92,45 @@ internal fun NotebookGrid(
                     size.height
                 )
 
-            if (
-                safeBottom >
-                safeTop
-            ) {
-                drawRect(
-                    color = highlightColor,
-                    topLeft = Offset(
-                        0f,
-                        safeTop
-                    ),
-                    size = Size(
-                        size.width,
-                        safeBottom - safeTop
-                    )
+            drawRect(
+                color = highlightColor,
+                topLeft = Offset(
+                    0f,
+                    safeTop
+                ),
+                size = Size(
+                    size.width,
+                    safeBottom - safeTop
                 )
-            }
+            )
         }
 
         /*
-         * Horizontal notebook ruling.
-         *
-         * Pre-calculate the number of lines to avoid repeated
-         * comparison overhead in the while-loop.
+         * Horizontal ruling lines.
          */
-        if (spacingPx > 0f) {
+        val lineCount =
+            (size.height / spacingPx).toInt()
 
-            val lineCount =
-                (size.height / spacingPx).toInt()
+        for (i in 0..lineCount) {
+            val y =
+                i * spacingPx
 
-            for (i in 1..lineCount) {
-                val y = spacingPx * i
-
-                drawLine(
-                    color = lineColor,
-                    start = Offset(
-                        0f,
-                        y
-                    ),
-                    end = Offset(
-                        size.width,
-                        y
-                    ),
-                    strokeWidth = 2f
-                )
-            }
+            drawLine(
+                color = lineColor,
+                start = Offset(
+                    0f,
+                    y
+                ),
+                end = Offset(
+                    size.width,
+                    y
+                ),
+                strokeWidth = 0.5f
+            )
         }
 
         /*
-         * Margin.
+         * Vertical margin line.
          */
         if (showMargin) {
             drawLine(
@@ -152,7 +143,7 @@ internal fun NotebookGrid(
                     marginPx,
                     size.height
                 ),
-                strokeWidth = 3f
+                strokeWidth = 0.5f
             )
         }
     }
