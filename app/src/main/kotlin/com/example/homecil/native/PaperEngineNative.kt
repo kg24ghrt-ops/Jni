@@ -4,7 +4,7 @@ import android.graphics.Bitmap
 
 /**
  * Native JNI bridge for the paper rendering engine.
- * This class provides direct access to the C++ native functions.
+ * This class provides direct access to the C++ native functions and Vulkan GPU rendering.
  */
 object PaperEngineNative {
 
@@ -14,7 +14,7 @@ object PaperEngineNative {
     }
 
     /**
-     * Render realistic paper texture into a Bitmap.
+     * Render realistic paper texture into a Bitmap (CPU).
      *
      * @param bitmap The target Bitmap to render into
      * @param width Width of the bitmap
@@ -41,7 +41,7 @@ object PaperEngineNative {
     )
 
     /**
-     * Render paper texture using multi-threading.
+     * Render paper texture using multi-threading (CPU).
      *
      * @param bitmap The target Bitmap to render into
      * @param width Width of the bitmap
@@ -70,7 +70,35 @@ object PaperEngineNative {
     )
 
     /**
-     * Simulate ink absorption and bleeding on paper.
+     * Render paper texture using Vulkan GPU compute shader.
+     * This provides the best performance on devices with Vulkan support.
+     *
+     * @param bitmap The target Bitmap to render into
+     * @param width Width of the bitmap
+     * @param height Height of the bitmap
+     * @param seed Random seed for reproducible textures
+     * @param grainIntensity Intensity of paper grain (0-1)
+     * @param fiberDensity Density of cellulose fibers (0-1)
+     * @param waterStainCount Number of water stains to add
+     * @param agingYellow Amount of yellowing/aging effect (0-1)
+     * @param fiberDirection Directional bias for fibers (-1 to 1)
+     * @param roughness Overall paper roughness (0-1)
+     */
+    external fun renderPaperVulkan(
+        bitmap: Bitmap,
+        width: Int,
+        height: Int,
+        seed: Int,
+        grainIntensity: Float,
+        fiberDensity: Float,
+        waterStainCount: Int,
+        agingYellow: Float,
+        fiberDirection: Float,
+        roughness: Float
+    )
+
+    /**
+     * Simulate ink absorption and bleeding on paper (CPU).
      *
      * @param bitmap The target paper bitmap
      * @param inkBitmap The ink stamp bitmap to apply
@@ -97,7 +125,34 @@ object PaperEngineNative {
     )
 
     /**
-     * Simplified ink simulation for direct color stamping.
+     * Simulate ink using Vulkan GPU compute shader.
+     *
+     * @param bitmap The target paper bitmap
+     * @param inkBitmap The ink stamp bitmap to apply
+     * @param x X position to apply ink
+     * @param y Y position to apply ink
+     * @param inkColorR Red component of ink color (0-1)
+     * @param inkColorG Green component of ink color (0-1)
+     * @param inkColorB Blue component of ink color (0-1)
+     * @param absorption How much the paper absorbs ink (0-1)
+     * @param noiseIntensity Variation in ink density (0-1)
+     * @param seed Random seed for reproducible results
+     */
+    external fun simulateInkVulkan(
+        bitmap: Bitmap,
+        inkBitmap: Bitmap,
+        x: Int,
+        y: Int,
+        inkColorR: Float,
+        inkColorG: Float,
+        inkColorB: Float,
+        absorption: Float,
+        noiseIntensity: Float,
+        seed: Int
+    )
+
+    /**
+     * Simplified ink simulation for direct color stamping (CPU).
      *
      * @param bitmap The target paper bitmap
      * @param x X position
@@ -122,7 +177,7 @@ object PaperEngineNative {
     )
 
     /**
-     * Distort a bitmap to simulate hand-drawn imperfections.
+     * Distort a bitmap to simulate hand-drawn imperfections (CPU).
      *
      * @param bitmap The bitmap to distort
      * @param seed Random seed for reproducible distortion
@@ -139,7 +194,24 @@ object PaperEngineNative {
     )
 
     /**
-     * Fast distortion for character bitmaps.
+     * Distort a bitmap using Vulkan GPU compute shader.
+     *
+     * @param bitmap The bitmap to distort
+     * @param seed Random seed for reproducible distortion
+     * @param distortionScale Overall scale of distortion
+     * @param sineWarpScale Scale of sinusoidal warp
+     * @param curvatureScale Scale of geometry-aware curvature modulation
+     */
+    external fun distortBitmapVulkan(
+        bitmap: Bitmap,
+        seed: Int,
+        distortionScale: Float,
+        sineWarpScale: Float,
+        curvatureScale: Float
+    )
+
+    /**
+     * Fast distortion for character bitmaps (CPU).
      *
      * @param bitmap The character bitmap to distort
      * @param seed Random seed for reproducible distortion
@@ -173,16 +245,50 @@ object PaperEngineNative {
     external fun hasSseSupport(): Boolean
 
     /**
+     * Check if Vulkan is supported on this device.
+     *
+     * @return true if Vulkan is available
+     */
+    external fun hasVulkanSupport(): Boolean
+
+    /**
+     * Initialize Vulkan context for GPU rendering.
+     *
+     * @param useComputeOnly If true, only initialize compute queues (no graphics)
+     * @return true if initialization succeeded
+     */
+    external fun initVulkan(useComputeOnly: Boolean): Boolean
+
+    /**
+     * Shutdown Vulkan context.
+     */
+    external fun shutdownVulkan()
+
+    /**
+     * Get Vulkan device information.
+     *
+     * @return String containing device info
+     */
+    external fun getVulkanDeviceInfo(): String
+
+    /**
      * Get device capability information as a formatted string.
      */
     fun getCapabilities(): String {
+        val vulkanSupported = hasVulkanSupport()
+        val neonSupported = hasNeonSupport()
+        val sseSupported = hasSseSupport()
+        val cores = getCpuCoreCount()
+        
         return """
         | Capability | Available |
         |------------|----------|
-        | CPU Cores | ${getCpuCoreCount()} |
-        | NEON Support | ${hasNeonSupport()} |
-        | SSE Support | ${hasSseSupport()} |
+        | CPU Cores | $cores |
+        | NEON Support | $neonSupported |
+        | SSE Support | $sseSupported |
+        | Vulkan Support | $vulkanSupported |
         | Recommended Threads | ${recommendedThreadCount()} |
+        ${if (vulkanSupported) "\n" + getVulkanDeviceInfo() else ""}
         """.trimMargin()
     }
 
@@ -199,5 +305,30 @@ object PaperEngineNative {
             cores <= 4 -> cores
             else -> 4  // Cap at 4 for most mobile devices
         }
+    }
+
+    /**
+     * Determine the best rendering backend for the current device.
+     */
+    fun getBestRenderingBackend(): RenderingBackend {
+        return if (hasVulkanSupport()) {
+            RenderingBackend.VULKAN
+        } else if (getCpuCoreCount() >= 4) {
+            RenderingBackend.MULTI_THREADED
+        } else {
+            RenderingBackend.SINGLE_THREADED
+        }
+    }
+
+    /**
+     * Rendering backend types
+     */
+    enum class RenderingBackend {
+        /** Single-threaded CPU rendering */
+        SINGLE_THREADED,
+        /** Multi-threaded CPU rendering */
+        MULTI_THREADED,
+        /** GPU-accelerated Vulkan rendering */
+        VULKAN
     }
 }

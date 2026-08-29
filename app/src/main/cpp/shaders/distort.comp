@@ -1,0 +1,116 @@
+// GLSL compute shader for bitmap distortion
+// Compile with: glslc -O distort.comp -o distort.comp.spv
+
+#version 450
+
+// Workgroup size
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Input/Output
+layout(binding = 0, rgba8) uniform image2D inputImage;
+layout(binding = 1, rgba8) writeonly uniform image2D outputImage;
+
+// Uniform parameters
+layout(binding = 0) uniform Uniforms {
+    uint seed;
+    float distortionScale;
+    float sineWarpScale;
+    float curvatureScale;
+    vec2 resolution;
+} ubo;
+
+// Hash function for noise
+uint hash(uint x, uint seed) {
+    uint h = x * 2654435761u + seed * 1442695041u;
+    h = (h ^ (h >> 16)) * 0x85ebca6bu;
+    h = (h ^ (h >> 13)) * 0xc2b2ae35u;
+    h = h ^ (h >> 16);
+    return h;
+}
+
+// Random float
+float randomFloat(uint x, uint seed) {
+    uint h = hash(x, seed);
+    return float(h & 0x7FFFFFFFu) / 2147483647.0;
+}
+
+// Smoothstep
+float smoothstep(float t) {
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Fractional Brownian Motion noise
+float fbmNoise(vec2 uv, uint seed, int octaves) {
+    float total = 0.0;
+    float frequency = 1.0;
+    float amplitude = 1.0;
+    float maxValue = 0.0;
+    
+    for (int i = 0; i < octaves; i++) {
+        // Simple value noise
+        ivec2 i = ivec2(floor(uv * frequency));
+        vec2 f = fract(uv * frequency);
+        
+        // Get random values at corners
+        float v00 = randomFloat(i.x + i.y * 57u + seed + uint(i), seed);
+        float v10 = randomFloat(i.x + 1u + i.y * 57u + seed + uint(i), seed);
+        float v01 = randomFloat(i.x + (i.y + 1u) * 57u + seed + uint(i), seed);
+        float v11 = randomFloat(i.x + 1u + (i.y + 1u) * 57u + seed + uint(i), seed);
+        
+        // Interpolate
+        float nx0 = mix(v00, v10, f.x);
+        float nx1 = mix(v01, v11, f.x);
+        float value = mix(nx0, nx1, f.y);
+        
+        total += value * amplitude;
+        maxValue += amplitude;
+        frequency *= 2.0;
+        amplitude *= 0.5;
+    }
+    
+    return total / maxValue;
+}
+
+// Main compute shader
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = vec2(pixelCoord) / ubo.resolution;
+    
+    // Generate distortion using FBM noise
+    vec2 distortion = vec2(
+        fbmNoise(uv * 10.0, ubo.seed, 4) * 2.0 - 1.0,
+        fbmNoise(uv * 10.0 + vec2(0.5), ubo.seed + 100u, 4) * 2.0 - 1.0
+    ) * ubo.distortionScale * 0.1;
+    
+    // Add sine warp
+    float sineWarp = sin(uv.x * 10.0 + ubo.seed * 0.1) * cos(uv.y * 8.0 + ubo.seed * 0.1) * 0.05;
+    distortion += vec2(sineWarp, sineWarp * 0.7) * ubo.sineWarpScale;
+    
+    // Calculate distorted coordinates
+    vec2 distortedUv = uv + distortion;
+    
+    // Geometry-aware curvature modulation
+    // Sample a few neighbors to estimate the gradient
+    vec4 center = imageLoad(inputImage, pixelCoord);
+    vec4 right = imageLoad(inputImage, pixelCoord + ivec2(1, 0));
+    vec4 down = imageLoad(inputImage, pixelCoord + ivec2(0, 1));
+    
+    // Calculate gradient
+    vec3 dx = right.rgb - center.rgb;
+    vec3 dy = down.rgb - center.rgb;
+    vec2 gradient = vec2(length(dx), length(dy));
+    
+    // Modulate distortion based on gradient
+    float curvature = (gradient.x + gradient.y) * 0.5;
+    distortedUv += vec2(curvature * 0.01) * ubo.curvatureScale;
+    
+    // Clamp coordinates
+    distortedUv = clamp(distortedUv, vec2(0.0), vec2(1.0));
+    
+    // Sample from input
+    ivec2 sampleCoord = ivec2(distortedUv * ubo.resolution);
+    vec4 color = imageLoad(inputImage, sampleCoord);
+    
+    // Output
+    imageStore(outputImage, pixelCoord, color);
+}

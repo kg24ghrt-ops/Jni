@@ -28,24 +28,36 @@ if(ANDROID_ABI STREQUAL "x86" OR ANDROID_ABI STREQUAL "x86_64")
     add_definitions(-D__SSE4_1__)
 endif()
 
+# Find Vulkan
+find_package(Vulkan REQUIRED)
+
 # Build the main native library from all C++ source files
 add_library(native-lib SHARED 
     native-lib.cpp
     native-lib-simd.cpp
     ink_engine.cpp
     distort_engine.cpp
+    vulkan_engine.cpp
 )
 
 # Include directories
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/shaders)
+include_directories(${Vulkan_INCLUDE_DIRS})
 
 # Link Android and required libraries
 target_link_libraries(native-lib 
     android
     log
     jnigraphics
+    ${Vulkan_LIBRARIES}
 )
 
 # Enable threading support
 find_package(Threads REQUIRED)
 target_link_libraries(native-lib Threads::Threads)
+
+# Add Vulkan headers
+if(ANDROID)
+    target_link_libraries(native-lib vulkan)
+endif()

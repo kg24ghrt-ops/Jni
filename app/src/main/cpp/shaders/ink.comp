@@ -1,0 +1,79 @@
+// GLSL compute shader for ink simulation
+// Compile with: glslc -O ink.comp -o ink.comp.spv
+
+#version 450
+
+// Workgroup size
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Input/Output
+layout(binding = 0, rgba8) uniform image2D paperImage;
+layout(binding = 1, rgba8) uniform image2D inkImage;
+layout(binding = 2, rgba8) writeonly uniform image2D outputImage;
+
+// Uniform parameters
+layout(binding = 0) uniform Uniforms {
+    ivec2 inkPosition;
+    ivec2 inkSize;
+    vec3 inkColor;
+    float absorption;
+    float noiseIntensity;
+    uint seed;
+} ubo;
+
+// Hash function
+uint hash(uint x, uint y, uint seed) {
+    uint h = x * 374761393u + y * 668265263u + seed * 1442695041u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h = h ^ (h >> 16);
+    return h;
+}
+
+// Random float
+float randomFloat(uint x, uint y, uint seed) {
+    uint h = hash(x, y, seed);
+    return float(h & 0x7FFFFFFFu) / 2147483647.0;
+}
+
+// Smoothstep
+float smoothstep(float t) {
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Simulate ink absorption and bleeding
+void main() {
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+    
+    // Get paper color
+    vec4 paperColor = imageLoad(paperImage, pixelCoord);
+    
+    // Get ink color (with bounds checking)
+    ivec2 inkCoord = pixelCoord - ubo.inkPosition;
+    vec4 inkValue = vec4(0.0);
+    
+    if (inkCoord.x >= 0 && inkCoord.x < ubo.inkSize.x &&
+        inkCoord.y >= 0 && inkCoord.y < ubo.inkSize.y) {
+        inkValue = imageLoad(inkImage, inkCoord);
+    }
+    
+    // Calculate ink density
+    float inkDensity = inkValue.a;
+    
+    // Add noise variation
+    float noise = randomFloat(pixelCoord.x, pixelCoord.y, ubo.seed) * 2.0 - 1.0;
+    inkDensity *= (1.0 + noise * ubo.noiseIntensity);
+    
+    // Calculate absorption based on paper brightness
+    float paperBrightness = dot(paperColor.rgb, vec3(0.299, 0.587, 0.114));
+    float effectiveAbsorption = ubo.absorption * (1.0 - paperBrightness * 0.5);
+    
+    // Blend ink with paper
+    vec3 inkRgb = ubo.inkColor * inkDensity * effectiveAbsorption;
+    vec3 resultRgb = mix(paperColor.rgb, inkRgb, inkDensity);
+    
+    // Darken slightly for absorption effect
+    resultRgb *= (1.0 - inkDensity * 0.1 * effectiveAbsorption);
+    
+    // Output
+    imageStore(outputImage, pixelCoord, vec4(resultRgb, 1.0));
+}
